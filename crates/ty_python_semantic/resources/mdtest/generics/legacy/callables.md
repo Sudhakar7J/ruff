@@ -950,7 +950,7 @@ R = TypeVar("R")
 def infer_result(callback: Callable[[T], R], consumer: Callable[[T], None]) -> R:
     raise NotImplementedError
 
-reveal_type(infer_result(identity, consume))  # revealed: A & B
+reveal_type(infer_result(identity, consume))  # revealed: B & A
 ```
 
 If we additionally supply a value, that selects the specific consumer overload that accepts it. The

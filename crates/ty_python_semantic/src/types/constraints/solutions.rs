@@ -15,8 +15,8 @@ use crate::types::constraints::variables::{
 use crate::types::constraints::{
     ALWAYS_FALSE, ALWAYS_TRUE, Assignment, AtomicConstraintId, BoundedSolutionLimits,
     CandidateSolution, CandidateSolutions, CandidateTypeVarSolution, CandidateTypeVarSolver,
-    ConstraintFailureEvidence, ConstraintSetStorage, InteriorNodeData, Node, NodeId,
-    SolutionLimits, SolutionValidity, SolutionViolation, SolutionViolationKind,
+    ConstraintFailureEvidence, ConstraintSetStorage, EvidenceSource, InteriorNodeData, Node,
+    NodeId, SolutionLimits, SolutionValidity, SolutionViolation, SolutionViolationKind,
 };
 use crate::types::typevar::{TypeVarBoundOrConstraints, TypeVarConstraints, TypeVarSet};
 use crate::types::visitor::any_over_type_expanding_aliases;
@@ -756,7 +756,13 @@ impl<'db, L: SolutionLimits> SolutionWalker<'db, L> {
         for constraint in constraints {
             let constraint = storage.atomic_constraint_data(constraint);
             if constraint.provides_bound_for(db, bound_typevar)
-                && constraint.provenance() == ConstraintProvenance::Evidence
+                && constraint.provenance().is_evidence()
+                && !constraint
+                    .provenance()
+                    .contains(ConstraintProvenance::VALIDITY)
+                && constraint
+                    .as_concrete()
+                    .is_none_or(|(_, bound)| !bound.has_unspecialized_type_var(db, env))
             {
                 evidence.add_constraint(db, bound_typevar, constraint);
             }
@@ -812,7 +818,7 @@ impl<'db, L: SolutionLimits> SolutionWalker<'db, L> {
             }
             let data = storage.atomic_constraint_data(constraint);
             if let Some(lower) = data.lower_bound_for(db, bound_typevar) {
-                has_lower_inference |= data.provenance() != ConstraintProvenance::Validity;
+                has_lower_inference |= data.provenance() != ConstraintProvenance::VALIDITY;
                 has_symbolic_lower |=
                     any_over_type_expanding_aliases(db, env, lower, Type::is_type_var);
                 let source_order = self
@@ -894,9 +900,10 @@ impl<'db, L: SolutionLimits> SolutionWalker<'db, L> {
             ),
             None => (ALWAYS_TRUE, None),
         };
-        let (when_upper, when_upper_source_order) = evidence.upper.iter_evidence().fold(
-            (ALWAYS_TRUE, None),
-            |(when, when_source_order), upper| {
+        let (when_upper, when_upper_source_order) = evidence
+            .upper
+            .iter_evidence_without_validity(EvidenceSource::All)
+            .fold((ALWAYS_TRUE, None), |(when, when_source_order), upper| {
                 let (when_upper, when_upper_source_order) = storage.load(
                     db,
                     env,
@@ -906,8 +913,7 @@ impl<'db, L: SolutionLimits> SolutionWalker<'db, L> {
                 let when_source_order =
                     storage.ordered_source_order(when_source_order, when_upper_source_order);
                 (when, when_source_order)
-            },
-        );
+            });
         let when = when_lower.and(storage, when_upper);
         let when_source_order =
             storage.ordered_source_order(when_lower_source_order, when_upper_source_order);
@@ -925,7 +931,7 @@ impl<'db, L: SolutionLimits> SolutionWalker<'db, L> {
         evidence: &CandidateTypeVarSolution<'db>,
         constrained: &Constrained<'db>,
     ) -> ControlFlow<L::Break, Option<ConstraintFailureEvidence<'db>>> {
-        if let Some(lower) = evidence.inference_lower(db, env)
+        if let Some(lower) = evidence.inference_lower()
             && constrained.declared_constraints.iter().all(|declared| {
                 let when = lower.when_assignable_to_owned(
                     db,
@@ -974,10 +980,16 @@ impl<'db, L: SolutionLimits> SolutionWalker<'db, L> {
                 continue;
             };
             let constraint = storage.atomic_constraint_data(constraint_id);
-            if constraint.provenance() != ConstraintProvenance::Evidence {
+            if !constraint.provenance().is_evidence()
+                || constraint
+                    .provenance()
+                    .contains(ConstraintProvenance::VALIDITY)
+            {
                 continue;
             }
-            if let Some(upper) = constraint.upper_bound_for(db, bound_typevar) {
+            if let Some(upper) = constraint.upper_bound_for(db, bound_typevar)
+                && !upper.has_unspecialized_type_var(db, env)
+            {
                 let order = self
                     .source_orders
                     .get_index_of(&constraint_id)
@@ -1019,7 +1031,10 @@ impl<'db, L: SolutionLimits> SolutionWalker<'db, L> {
         }
         // The solver can still establish an upper-bound failure after projection, even when the
         // original relation has alternatives or no longer contains the individual clauses.
-        let inferred_upper: Vec<_> = evidence.upper.iter_evidence().collect();
+        let inferred_upper: Vec<_> = evidence
+            .upper
+            .iter_evidence_without_validity(EvidenceSource::All)
+            .collect();
         ControlFlow::Continue(
             excludes_every_constraint(storage, &inferred_upper)
                 .then_some(ConstraintFailureEvidence::UpperUnknown),
@@ -1168,7 +1183,10 @@ impl<'db, L: SolutionLimits> SolutionWalker<'db, L> {
             // constraints can possibly be satisfied.
             return ControlFlow::Continue(());
         };
-        let has_no_evidence = evidence.evidence_lower.is_none() && !evidence.upper.has_evidence();
+        let has_no_evidence = evidence.evidence_lower.is_none()
+            && !evidence
+                .upper
+                .has_evidence_without_validity(EvidenceSource::All);
         let is_preservable_typevar = |ty| {
             let Type::TypeVar(typevar) = ty else {
                 return false;
@@ -1538,36 +1556,51 @@ impl<'db, L: SolutionLimits> SolutionWalker<'db, L> {
         let mut mappings: FxIndexMap<BoundTypeVarInstance<'db>, CandidateTypeVarSolver<'db>> =
             FxIndexMap::default();
 
+        // An unspecialized outer variable supplies no inference evidence, but it may provide a
+        // useful validity bound.
+        let is_useful_bound = |provenance: ConstraintProvenance, bound: Type<'db>| {
+            provenance.contains(ConstraintProvenance::VALIDITY)
+                || !bound.has_unspecialized_type_var(db, env)
+        };
+
         for (constraint, _) in typevars {
             let constraint = storage.atomic_constraint_data(constraint);
             match constraint {
-                AtomicConstraint::ConcreteLower(lower) => {
-                    if lower.typevar.is_inferable(db, self.inferable) {
-                        let solver = mappings.entry(lower.typevar).or_default();
-                        solver.add_constraint(db, lower.typevar, constraint);
-                    }
+                AtomicConstraint::ConcreteLower(lower)
+                    if lower.typevar.is_inferable(db, self.inferable)
+                        && is_useful_bound(lower.provenance, lower.bound) =>
+                {
+                    let solver = mappings.entry(lower.typevar).or_default();
+                    solver.add_constraint(db, lower.typevar, constraint);
                 }
-                AtomicConstraint::ConcreteUpper(upper) => {
-                    if upper.typevar.is_inferable(db, self.inferable) {
-                        let solver = mappings.entry(upper.typevar).or_default();
-                        solver.add_constraint(db, upper.typevar, constraint);
-                    }
+                AtomicConstraint::ConcreteUpper(upper)
+                    if upper.typevar.is_inferable(db, self.inferable)
+                        && is_useful_bound(upper.provenance, upper.bound) =>
+                {
+                    let solver = mappings.entry(upper.typevar).or_default();
+                    solver.add_constraint(db, upper.typevar, constraint);
                 }
-                AtomicConstraint::ConcreteEquivalence(equivalence) => {
-                    if equivalence.typevar.is_inferable(db, self.inferable) {
-                        let solver = mappings.entry(equivalence.typevar).or_default();
-                        solver.add_constraint(db, equivalence.typevar, constraint);
-                    }
+                AtomicConstraint::ConcreteEquivalence(equivalence)
+                    if equivalence.typevar.is_inferable(db, self.inferable)
+                        && is_useful_bound(equivalence.provenance, equivalence.bound) =>
+                {
+                    let solver = mappings.entry(equivalence.typevar).or_default();
+                    solver.add_constraint(db, equivalence.typevar, constraint);
                 }
                 AtomicConstraint::TypeVarRange(bound) => {
                     // A direct relationship between an inferable and non-inferable typevar must
                     // contribute bounds for both endpoints. Contextual inference relies on the
                     // reverse, non-inferable binding to preserve relationships to outer typevars.
-                    if bound.left.is_inferable(db, self.inferable)
-                        || bound.right.is_inferable(db, self.inferable)
+                    if !bound.left.is_inferable(db, self.inferable)
+                        && !bound.right.is_inferable(db, self.inferable)
                     {
+                        continue;
+                    }
+                    if is_useful_bound(bound.provenance, Type::TypeVar(bound.right)) {
                         let solver = mappings.entry(bound.left).or_default();
                         solver.add_constraint(db, bound.left, constraint);
+                    }
+                    if is_useful_bound(bound.provenance, Type::TypeVar(bound.left)) {
                         let solver = mappings.entry(bound.right).or_default();
                         solver.add_constraint(db, bound.right, constraint);
                     }
@@ -1577,15 +1610,23 @@ impl<'db, L: SolutionLimits> SolutionWalker<'db, L> {
                     // contribute bounds for both endpoints. Contextual inference relies on the
                     // reverse, non-inferable binding to preserve relationships to outer typevars.
                     let (left, right) = bound.in_builder(db, storage);
-                    if left.is_inferable(db, self.inferable)
-                        || right.is_inferable(db, self.inferable)
+                    if !left.is_inferable(db, self.inferable)
+                        && !right.is_inferable(db, self.inferable)
                     {
+                        continue;
+                    }
+                    if is_useful_bound(bound.provenance, Type::TypeVar(right)) {
                         let solver = mappings.entry(left).or_default();
                         solver.add_constraint(db, left, constraint);
+                    }
+                    if is_useful_bound(bound.provenance, Type::TypeVar(left)) {
                         let solver = mappings.entry(right).or_default();
                         solver.add_constraint(db, right, constraint);
                     }
                 }
+                AtomicConstraint::ConcreteLower(_)
+                | AtomicConstraint::ConcreteUpper(_)
+                | AtomicConstraint::ConcreteEquivalence(_) => {}
             }
         }
 
@@ -1604,7 +1645,7 @@ impl<'db, L: SolutionLimits> SolutionWalker<'db, L> {
                     }
                     None => solution
                         .has_lower_inference()
-                        .then(|| solution.effective_lower(db, env)),
+                        .then(|| solution.effective_lower(db, env, EvidenceSource::All)),
                 };
 
                 if let Some(typevar_violations) = typevar_violations
@@ -1940,7 +1981,7 @@ impl<'db> Validations<'db> {
             let constraints = AtomicConstraint::new_upper_bound(
                 db,
                 env,
-                ConstraintProvenance::Validity,
+                ConstraintProvenance::VALIDITY,
                 bound_typevar,
                 bound,
             );
@@ -1976,7 +2017,7 @@ impl<'db> Validations<'db> {
                     let constraints = AtomicConstraint::new_equivalence_bound(
                         db,
                         env,
-                        ConstraintProvenance::Validity,
+                        ConstraintProvenance::VALIDITY,
                         bound_typevar,
                         constrained_ty,
                     );

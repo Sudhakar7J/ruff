@@ -1501,7 +1501,7 @@ If we pass both the callback and the consumer to a generic function, we can solv
 def infer_result[T, R](callback: Callable[[T], R], consumer: Callable[[T], None]) -> R:
     raise NotImplementedError
 
-reveal_type(infer_result(identity, consume))  # revealed: A & B
+reveal_type(infer_result(identity, consume))  # revealed: B & A
 ```
 
 If we additionally supply a value, that selects the specific consumer overload that accepts it. The

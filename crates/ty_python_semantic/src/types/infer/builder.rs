@@ -62,7 +62,7 @@ use crate::types::callable::CallableTypeKind;
 use crate::types::class::{
     ClassLiteral, CodeGeneratorKind, FrozenDataclassDispatch, MethodDecorator,
 };
-use crate::types::constraints::{CandidateSolutions, ConstraintSetBuilder, Solutions};
+use crate::types::constraints::{ConstraintSetBuilder, Solutions};
 use crate::types::context::{InferContext, InferContextResult};
 use crate::types::dedicated::pydantic;
 use crate::types::diagnostic::{
@@ -7067,7 +7067,8 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
                 Type::Callable(target_callable),
                 inferable,
             );
-        let Solutions::Constrained(solutions) = path_bounds.solve(db, env, &constraints) else {
+        let Solutions::Constrained(solutions) = path_bounds.solve(db, env, &constraints, inferable)
+        else {
             return Some(ty);
         };
 
@@ -8004,7 +8005,7 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
                         .entry(identity)
                         .and_modify(|current| *current = current.join(variance))
                         .or_insert(variance);
-                    CandidateSolutions::preliminary_solve(db, env, &constraints, path_bound)
+                    path_bound.preliminary_solve(db, env, &constraints)
                 });
 
                 match solutions {
@@ -8356,7 +8357,7 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
             .origin(self.db())
             .apply_specialization(db, |_| {
                 builder.build_merged_with(|current_typevar, bounds| {
-                    let lower = bounds?.inference_lower(db, env)?;
+                    let lower = bounds?.inference_lower()?;
 
                     let lower = lower.promote_collection_element_type(
                         db,
@@ -8419,7 +8420,8 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
         let path_bounds =
             generator_ty.assignable_solutions_with_inferable(db, env, annotation, inferable);
         let constraints = ConstraintSetBuilder::new();
-        let Solutions::Constrained(solutions) = path_bounds.solve(db, env, &constraints) else {
+        let Solutions::Constrained(solutions) = path_bounds.solve(db, env, &constraints, inferable)
+        else {
             return TypeContext::default();
         };
 
@@ -9063,7 +9065,12 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
                                 .replace_parameter_defaults(db, env)
                         }));
 
-                    if let Some(annotated_type) = parameter_types.next() {
+                    if let Some(annotated_type) = parameter_types.next()
+                        && !matches!(
+                            annotated_type,
+                            Type::Dynamic(DynamicType::UnspecializedTypeVar)
+                        )
+                    {
                         parameter.with_annotated_type(annotated_type)
                     } else {
                         parameter
@@ -9081,7 +9088,12 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
                                 .replace_parameter_defaults(db, env)
                         }));
 
-                    if let Some(annotated_type) = parameter_types.next() {
+                    if let Some(annotated_type) = parameter_types.next()
+                        && !matches!(
+                            annotated_type,
+                            Type::Dynamic(DynamicType::UnspecializedTypeVar)
+                        )
+                    {
                         parameter.with_annotated_type(annotated_type)
                     } else {
                         parameter

@@ -2403,6 +2403,33 @@ def check(box: Box[int | str], value: int):
     reveal_type(provide(box, value))  # revealed: Box[str]
 ```
 
+## Declared type matching multiple type variables
+
+Regression test for <https://github.com/astral-sh/ty/issues/3236>.
+
+```toml
+[environment]
+python-version = "3.13"
+```
+
+```py
+from typing import Never, TypeVar
+
+T = TypeVar("T")
+U = TypeVar("U")
+V = TypeVar("V", default=Never)
+
+def concat(left: list[T], right: list[U]) -> list[T | U]:
+    return [*left, *right]
+
+def concat_wider(left: list[T], right: list[U]) -> list[T | U | V]:
+    return [*left, *right]
+
+def _(left: list[int], right: list[str]):
+    result: list[int | str] = concat(left, right)  # ok
+    wider: list[int | str | bytes] = concat_wider(left, right)  # ok
+```
+
 ## Inferring nested generic function calls
 
 We can infer type assignments in nested calls to multiple generic functions. If they use the same
@@ -4956,9 +4983,16 @@ def make_sink(mapping: Callable[[], V | Invariant[V] | Covariant[V]]) -> Callabl
     return lambda value: None
 
 def wrapped_returns(mapping: V | Invariant[V] | Covariant[V]) -> None:
+    items = make_list(lambda: mapping)
+    sink = make_sink(lambda: mapping)
     # revealed: list[Invariant[V@wrapped_returns] | V@wrapped_returns | Covariant[V@wrapped_returns]]
+    reveal_type(items)
+    reveal_type(sink)  # revealed: (Invariant[V@wrapped_returns] | V@wrapped_returns, /) -> None
+
+    # revealed: list[V@wrapped_returns | Covariant[V@wrapped_returns] | Invariant[V@wrapped_returns]]
     reveal_type(make_list(lambda: mapping))
-    reveal_type(make_sink(lambda: mapping))  # revealed: (Invariant[V@wrapped_returns] | V@wrapped_returns, /) -> None
+    # revealed: (V@wrapped_returns | Covariant[V@wrapped_returns] | Invariant[V@wrapped_returns], /) -> None
+    reveal_type(make_sink(lambda: mapping))
 ```
 
 ### Inferred TypedDict return alternatives
