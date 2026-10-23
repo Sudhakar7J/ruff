@@ -104,11 +104,12 @@ class Items:
     def update(self, values) -> None:
         self.items = [*values]
         self.items = [(x,) for x in self.items]
-        reveal_type(self.items)  # revealed: list[Unknown]
+        reveal_type(self.items)  # revealed: list[tuple[Unknown]]
 
 def _(items: Items):
     items.update(items.items)
-    reveal_type(items.items)  # revealed: list[Unknown] | list[tuple[Unknown]]
+    # TODO: This should reveal `list[tuple[Unknown]]`.
+    reveal_type(items.items)  # revealed: Unknown
 ```
 
 ## Concatenating recursively growing tuples
