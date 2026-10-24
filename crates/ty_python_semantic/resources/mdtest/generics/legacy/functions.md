@@ -2686,7 +2686,7 @@ from typing import Callable, TypeVar, cast
 
 T = TypeVar("T")
 
-# no diagnostic
+# ok
 def apply(value: T, callback: Callable[[T], T] = lambda item=cast(T, None): item) -> T:
     return callback(value)
 ```
