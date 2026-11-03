@@ -1745,7 +1745,9 @@ fn loop_header_reachability_impl<'db>(
             // necessary for prior uses in the loop to see it.
             // Discarded dictionary-key bindings also require a fallback to the receiver's
             // value type instead of contributing their assigned value.
-            DefinitionState::Defined(_) | DefinitionState::Deleted => {
+            DefinitionState::Defined(_)
+            | DefinitionState::Deleted
+            | DefinitionState::Invalidated => {
                 deleted_reachability = deleted_reachability.or(reachability);
                 deleted_narrowing_constraints.insert(live_binding.narrowing_constraint());
             }
@@ -1887,7 +1889,7 @@ fn place_from_bindings_impl<'db>(
                 DefinitionState::Undefined => {
                     return None;
                 }
-                DefinitionState::Deleted => {
+                DefinitionState::Deleted | DefinitionState::Invalidated => {
                     deleted_reachability = deleted_reachability.or_else(|| {
                         evaluate_reachability_with_cache(
                             db,

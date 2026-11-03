@@ -49,7 +49,7 @@ use crate::{
                 SuiteExitKind, is_trivial_statement, suite_ends_with_exit,
             },
         },
-        narrow::{NarrowingConstraint, infer_narrowing_constraints},
+        narrow::{NarrowingConstraint, NarrowingTarget, infer_narrowing_constraints},
         signatures::CallableSignature,
         tuple::{Tuple, TupleLength},
     },
@@ -1525,7 +1525,8 @@ impl<'db> TypeInferenceBuilder<'db, '_> {
                 return None;
             }
             let place = places.symbol_id(&name.id)?;
-            let (constraint, _) = infer_narrowing_constraints(db, predicate, place.into());
+            let (constraint, _) =
+                infer_narrowing_constraints(db, predicate, NarrowingTarget::Value(place.into()));
             NarrowingConstraint::intersection(ty)
                 .merge_constraint_and(constraint?)
                 .evaluate_constraint_type(db, env)

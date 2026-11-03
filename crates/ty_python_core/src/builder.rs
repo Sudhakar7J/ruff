@@ -1553,7 +1553,7 @@ impl<'db, 'ast> SemanticIndexBuilder<'db, 'ast> {
             .iter()
             .copied()
         {
-            self.use_def_maps[scope].delete_binding(associated_place.into());
+            self.use_def_maps[scope].invalidate_binding(associated_place.into());
         }
     }
 
@@ -3693,6 +3693,9 @@ impl<'db, 'ast> SemanticIndexBuilder<'db, 'ast> {
                         op,
                         ast::CmpOp::Is | ast::CmpOp::IsNot
                     ));
+                }
+                if let Some(item) = PlaceExpr::from_key_membership(compare) {
+                    self.add_place(item);
                 }
             }
             ast::Expr::BoolOp(node) => self.visit_bool_expression(node, context),

@@ -1718,8 +1718,9 @@ david = OptionalPerson(name="David")
 emily = OptionalPerson(age=30)
 frank = OptionalPerson(name="Frank", age=25)
 
-# TODO: we could emit an error here, because these fields are not guaranteed to exist
+# error: [possibly-missing-typed-dict-key]
 reveal_type(charlie["name"])  # revealed: str
+# error: [possibly-missing-typed-dict-key]
 reveal_type(david["age"])  # revealed: int | None
 ```
 
@@ -1775,8 +1776,10 @@ user1 = User(name="Alice", email="alice@example.com")  # required fields
 user2 = User(name="Bob", email="bob@example.com", bio="Developer")  # with optional bio
 
 reveal_type(msg1["id"])  # revealed: int
+# error: [possibly-missing-typed-dict-key]
 reveal_type(msg1["content"])  # revealed: str
 reveal_type(user1["name"])  # revealed: str
+# error: [possibly-missing-typed-dict-key]
 reveal_type(user1["bio"])  # revealed: str
 ```
 
@@ -2544,6 +2547,98 @@ def _(
     # error: [invalid-key]
     # error: [invalid-key]
     reveal_type(being["legs"])  # revealed: Unknown
+```
+
+### Reading non-required keys
+
+A subscript read can raise `KeyError` when the key is non-required. The
+`possibly-missing-typed-dict-key` rule reports these reads when enabled.
+
+```toml
+[environment]
+python-version = "3.12"
+
+[rules]
+possibly-missing-typed-dict-key = "error"
+```
+
+```py
+from typing import Literal, NotRequired, Required, TypedDict
+
+class Movie(TypedDict, total=False):
+    title: Required[str]
+    year: int
+
+class Release(TypedDict):
+    year: NotRequired[str]
+
+def read(movie: Movie, key: Literal["title", "year"], other: Movie | Release):
+    reveal_type(movie["title"])  # revealed: str
+    # snapshot: possibly-missing-typed-dict-key
+    reveal_type(movie["year"])  # revealed: int
+    reveal_type(movie.get("year"))  # revealed: int | None
+    # error: [possibly-missing-typed-dict-key]
+    reveal_type(movie[key])  # revealed: str | int
+    # error: [possibly-missing-typed-dict-key]
+    reveal_type(other["year"])  # revealed: int | str
+    movie["typo"]  # error: [invalid-key]
+```
+
+```snapshot
+error[possibly-missing-typed-dict-key]: Key "year" may be missing from `Movie`
+  --> src/mdtest_snippet.py:13:23
+   |
+13 |     reveal_type(movie["year"])  # revealed: int
+   |                       ^^^^^^
+```
+
+Checking membership or assigning the key makes subsequent reads safe on that path.
+
+```py
+def guarded(movie: Movie):
+    if "year" in movie:
+        reveal_type(movie["year"])  # revealed: int
+        del movie["year"]
+        movie["year"]  # error: [possibly-missing-typed-dict-key]
+    if "year" not in movie:
+        return
+    reveal_type(movie["year"])  # revealed: int
+
+def guarded_literal_key(movie: Movie, key: Literal["year"]):
+    if key in movie:
+        reveal_type(movie["year"])  # revealed: int
+    if "year" in movie:
+        reveal_type(movie[key])  # revealed: int
+
+def bounded[T: Movie](movie: T):
+    movie["year"]  # error: [possibly-missing-typed-dict-key]
+    if "year" in movie:
+        reveal_type(movie["year"])  # revealed: int
+
+def assigned(movie: Movie, flag: bool):
+    if flag:
+        movie["year"] = 2026
+    movie["year"]  # error: [possibly-missing-typed-dict-key]
+    movie["year"] = 1984
+    reveal_type(movie["year"])  # revealed: Literal[1984]
+
+def augmented(movie: Movie):
+    movie["year"] += 1  # error: [possibly-missing-typed-dict-key]
+
+def constructed():
+    movie = Movie(title="Alien", year=1979)
+    reveal_type(movie["year"])  # revealed: int
+    del movie["year"]
+    movie["year"]  # error: [possibly-missing-typed-dict-key]
+
+    movie = Movie(title="Aliens", year=1986)
+    reveal_type(movie["year"])  # revealed: int
+    movie = Movie(title="Alien")
+    movie["year"]  # error: [possibly-missing-typed-dict-key]
+
+    reveal_type(Movie(title="Alien", year=1979)["year"])  # revealed: int
+    reveal_type(Movie({"title": "Alien", "year": 1979})["year"])  # revealed: int
+    reveal_type(Movie(**{"title": "Alien", "year": 1979})["year"])  # revealed: int
 ```
 
 ### Writing
@@ -3881,6 +3976,7 @@ class Child(Base):
 child1 = Child(b="hello", c=[1, 2, 3])
 child2 = Child(a=1, b="world", c=[])
 
+# error: [possibly-missing-typed-dict-key]
 reveal_type(child1["a"])  # revealed: int
 reveal_type(child1["b"])  # revealed: str
 reveal_type(child1["c"])  # revealed: list[int]
@@ -5131,6 +5227,7 @@ empty_movie = MovieWithOptional()
 movie_no_year = MovieWithOptional(name="The Matrix")
 reveal_type(movie_no_year)  # revealed: MovieWithOptional
 reveal_type(movie_no_year["name"])  # revealed: str
+# error: [possibly-missing-typed-dict-key]
 reveal_type(movie_no_year["year"])  # revealed: int
 ```
 
@@ -5280,6 +5377,7 @@ td1: TD = {"required": "hello"}  # Valid - optional is not required
 td2: TD = {"required": "hello", "optional": 42}  # Valid - all keys provided
 reveal_type(td1)  # revealed: TD
 reveal_type(td1["required"])  # revealed: Literal["hello"]
+# error: [possibly-missing-typed-dict-key]
 reveal_type(td1["optional"])  # revealed: int
 
 # error: [missing-typed-dict-key] "Missing required key 'required' in TypedDict `TD` constructor"
@@ -8075,6 +8173,7 @@ class Child(Base):
 # Child inherits extra_items=int from Base
 def _(child: Child) -> None:
     reveal_type(child["name"])  # revealed: str
+    # error: [possibly-missing-typed-dict-key]
     reveal_type(child["age"])  # revealed: int
     reveal_type(child["other"])  # revealed: int
 ```

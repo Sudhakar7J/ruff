@@ -45,7 +45,6 @@ use ruff_python_ast::helpers::any_over_expr;
 use ruff_python_ast::name::Name;
 use ruff_python_stdlib::identifiers::is_identifier;
 
-use super::UnionType;
 use super::call::CallArguments;
 use super::constraints::{ConstraintSetBuilder, Solutions};
 use super::equality::{
@@ -53,6 +52,7 @@ use super::equality::{
     evaluate_type_equality, evaluate_type_inequality,
 };
 use super::match_pattern::is_typed_dict_runtime_domain;
+use super::{StringLiteralType, UnionType};
 use itertools::{Either, Itertools};
 use ruff_python_ast as ast;
 use ruff_python_ast::{BoolOp, ExprBoolOp};
@@ -82,7 +82,7 @@ use self::containment::{elements_of, narrow_string_membership};
 pub(crate) fn infer_narrowing_constraints<'db>(
     db: &'db dyn Db,
     predicate: Predicate<'db>,
-    place: ScopedPlaceId,
+    place: NarrowingTarget<'db>,
 ) -> (
     Option<NarrowingConstraint<'db>>,
     Option<NarrowingConstraint<'db>>,
@@ -1352,8 +1352,34 @@ impl<'db> From<Type<'db>> for NarrowingConstraint<'db> {
     }
 }
 
-type NarrowingConstraints<'db> = FxHashMap<ScopedPlaceId, NarrowingConstraint<'db>>;
-type FrozenNarrowingConstraints<'db> = FrozenMap<ScopedPlaceId, NarrowingConstraint<'db>>;
+/// The value of a place and the presence of a dictionary key narrow independently.
+#[derive(
+    Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, get_size2::GetSize, salsa::SalsaValue,
+)]
+pub(crate) enum NarrowingTarget<'db> {
+    Value(ScopedPlaceId),
+    /// Tracks writes and deletions of a subscript place such as `movie["year"]`.
+    KeyPresence(ScopedPlaceId),
+    /// Tracks membership on the receiver, including when the key is a `Literal` variable.
+    ContainsKey(ScopedPlaceId, StringLiteralType<'db>),
+}
+
+impl NarrowingTarget<'_> {
+    pub(crate) fn place(self) -> ScopedPlaceId {
+        match self {
+            Self::Value(place) | Self::KeyPresence(place) | Self::ContainsKey(place, _) => place,
+        }
+    }
+}
+
+impl From<ScopedPlaceId> for NarrowingTarget<'_> {
+    fn from(place: ScopedPlaceId) -> Self {
+        Self::Value(place)
+    }
+}
+
+type NarrowingConstraints<'db> = FxHashMap<NarrowingTarget<'db>, NarrowingConstraint<'db>>;
+type FrozenNarrowingConstraints<'db> = FrozenMap<NarrowingTarget<'db>, NarrowingConstraint<'db>>;
 
 /// The narrowing constraints contributed by a match pattern.
 ///
@@ -1404,7 +1430,11 @@ enum ExpressionNarrowingConstraints<'db> {
 }
 
 impl<'db> ExpressionNarrowingConstraints<'db> {
-    fn get(&self, place: ScopedPlaceId, is_positive: bool) -> Option<NarrowingConstraint<'db>> {
+    fn get(
+        &self,
+        place: NarrowingTarget<'db>,
+        is_positive: bool,
+    ) -> Option<NarrowingConstraint<'db>> {
         match self {
             Self::Provisional => Some(NarrowingConstraint::intersection(Type::pending_narrowing())),
             Self::Inferred { positive, negative } => if is_positive { positive } else { negative }
@@ -1421,7 +1451,7 @@ fn insert_narrowing_constraint<'db>(
     constraint: NarrowingConstraint<'db>,
 ) {
     constraints
-        .entry(place)
+        .entry(place.into())
         .and_modify(|existing| {
             *existing = existing.merge_constraint_and(constraint.clone());
         })
@@ -1791,7 +1821,7 @@ impl<'db, 'ast> NarrowingConstraintsBuilder<'db, 'ast> {
                         is_positive,
                     )
                     .map(|(place, constraint)| {
-                        NarrowingConstraints::from_iter([(place, constraint)])
+                        NarrowingConstraints::from_iter([(place.into(), constraint)])
                     });
 
                 Self::merge_optional_constraints_and(constraints, nominal_constraints)
@@ -1810,7 +1840,7 @@ impl<'db, 'ast> NarrowingConstraintsBuilder<'db, 'ast> {
                         self.narrow_tuple_subscript_by_truthiness(inference, subscript, is_positive)
                     })
                     .map(|(place, constraint)| {
-                        NarrowingConstraints::from_iter([(place, constraint)])
+                        NarrowingConstraints::from_iter([(place.into(), constraint)])
                     });
 
                 Self::merge_optional_constraints_and(constraints, subscript_constraints)
@@ -2033,9 +2063,9 @@ impl<'db, 'ast> NarrowingConstraintsBuilder<'db, 'ast> {
         let place = self.expect_place(&subject_place);
         let subject_ty = infer_same_file_expression_type(db, subject, TypeContext::default());
         let mut constraints = expression_constraints.unwrap_or_default();
-        constraints.remove(&place);
+        constraints.remove(&place.into());
         if let Some(subject_constraint) = self.positive_subject_constraint(kind, subject_ty) {
-            constraints.insert(place, subject_constraint);
+            constraints.insert(place.into(), subject_constraint);
         }
         (!constraints.is_empty()).then_some(constraints)
     }
@@ -3757,7 +3787,7 @@ impl<'db> NarrowingConstraintsBuilder<'db, '_> {
         };
 
         Some(NarrowingConstraints::from_iter([(
-            place,
+            place.into(),
             NarrowingConstraint::intersection(ty),
         )]))
     }
@@ -3780,9 +3810,9 @@ impl<'db> NarrowingConstraintsBuilder<'db, '_> {
             // The target is rebound after the value is evaluated, invalidating constraints on the
             // target and any member places rooted at it.
             value_constraints.retain(|place, _| {
-                *place != target_place
+                place.place() != target_place
                     && !places
-                        .parents(places.place(*place))
+                        .parents(places.place(place.place()))
                         .any(|parent| parent == target_place)
             });
         }
@@ -4156,7 +4186,7 @@ impl<'db> NarrowingConstraintsBuilder<'db, '_> {
             });
             if filtered != Type::Union(union) {
                 let place = self.expect_place(&subscript_place_expr);
-                constraints.insert(place, NarrowingConstraint::replacement(filtered));
+                constraints.insert(place.into(), NarrowingConstraint::replacement(filtered));
             }
         }
 
@@ -4310,13 +4340,38 @@ impl<'db> NarrowingConstraintsBuilder<'db, '_> {
         // def _(u: Foo | Bar):
         //     if "foo" not in u:
         //         reveal_type(u)  # revealed: Bar
-        if let Some((left, op @ (ast::CmpOp::In | ast::CmpOp::NotIn), right)) =
-            expr_compare.as_single()
-            && let Some(key) = inference.expression_type(left).as_string_literal()
-            && let rhs_expr = right.expression_value()
-            && let rhs_type = inference.expression_type(right)
+        let membership = expr_compare.as_single().and_then(|(left, op, right)| {
+            if !matches!(op, ast::CmpOp::In | ast::CmpOp::NotIn) {
+                return None;
+            }
+            let key = inference.expression_type(left).as_string_literal()?;
+            Some((key, *op, right, inference.expression_type(right)))
+        });
+        if let Some((key, op, right, rhs_type)) = membership
+            && rhs_type.typed_dict_key_required(db, &self.env, key.value(db)) == Some(false)
+        {
+            let present = is_positive == (op == ast::CmpOp::In);
+            if let Some(container) = PlaceExpr::try_from_expr(right)
+                && let Some(place) = self.places().place_id(&container)
+            {
+                constraints.insert(
+                    NarrowingTarget::ContainsKey(place, key),
+                    NarrowingConstraint::intersection(Type::bool_literal(present)),
+                );
+            }
+            if let Some(item) = PlaceExpr::from_key_membership(expr_compare)
+                && let Some(place) = self.places().place_id(&item)
+            {
+                constraints.insert(
+                    NarrowingTarget::KeyPresence(place),
+                    NarrowingConstraint::intersection(Type::bool_literal(present)),
+                );
+            }
+        }
+        if let Some((key, op, right, rhs_type)) = membership
             && is_or_contains_typeddict(db, rhs_type)
         {
+            let rhs_expr = right.expression_value();
             let key = key.value(db);
             let apply_constraint =
                 |constraints: &mut NarrowingConstraints<'db>,
@@ -4324,7 +4379,7 @@ impl<'db> NarrowingConstraintsBuilder<'db, '_> {
                     let comparator_place = PlaceExpr::try_from_expr(right)
                         .and_then(|place_expr| self.places().place_id(&place_expr));
                     if let Some(place) = comparator_place {
-                        constraints.insert(place, constraint.clone());
+                        constraints.insert(place.into(), constraint.clone());
                     }
 
                     let value_place = PlaceExpr::try_from_expr(rhs_expr)
@@ -4332,11 +4387,11 @@ impl<'db> NarrowingConstraintsBuilder<'db, '_> {
                     if value_place != comparator_place
                         && let Some(place) = value_place
                     {
-                        constraints.insert(place, constraint);
+                        constraints.insert(place.into(), constraint);
                     }
                 };
 
-            if is_positive == (*op == ast::CmpOp::In) {
+            if is_positive == (op == ast::CmpOp::In) {
                 let narrowed = self.narrow_with_present_key(rhs_type, key);
                 if narrowed != rhs_type.resolve_type_alias(db) {
                     apply_constraint(&mut constraints, NarrowingConstraint::replacement(narrowed));
@@ -4460,7 +4515,7 @@ impl<'db> NarrowingConstraintsBuilder<'db, '_> {
                 {
                     let place = self.expect_place(&target);
                     constraints.insert(
-                        place,
+                        place.into(),
                         NarrowingConstraint::intersection(
                             Type::instance(db, &self.env, other_class.top_materialization(db))
                                 .negate_if(db, &self.env, !is_positive),
@@ -4489,7 +4544,7 @@ impl<'db> NarrowingConstraintsBuilder<'db, '_> {
                 let place = self.expect_place(&narrowable);
                 let constraint = NarrowingConstraint::intersection(ty);
                 constraints
-                    .entry(place)
+                    .entry(place.into())
                     .and_modify(|existing| {
                         *existing = existing.merge_constraint_and(constraint.clone());
                     })
@@ -4517,7 +4572,7 @@ impl<'db> NarrowingConstraintsBuilder<'db, '_> {
                 let place = self.expect_place(&narrowable);
                 let constraint = NarrowingConstraint::intersection(ty);
                 constraints
-                    .entry(place)
+                    .entry(place.into())
                     .and_modify(|existing| {
                         *existing = existing.merge_constraint_and(constraint.clone());
                     })
@@ -4580,7 +4635,7 @@ impl<'db> NarrowingConstraintsBuilder<'db, '_> {
                     let target = PlaceExpr::try_from_expr(arg)?;
                     let place = self.expect_place(&target);
                     Some(NarrowingConstraints::from_iter([(
-                        place,
+                        place.into(),
                         NarrowingConstraint::intersection(narrowed_ty),
                     )]))
                 } else {
@@ -4614,7 +4669,7 @@ impl<'db> NarrowingConstraintsBuilder<'db, '_> {
                     );
 
                     return Some(NarrowingConstraints::from_iter([(
-                        place,
+                        place.into(),
                         NarrowingConstraint::intersection(constraint.negate_if(
                             db,
                             &self.env,
@@ -4648,7 +4703,7 @@ impl<'db> NarrowingConstraintsBuilder<'db, '_> {
                             NarrowingConstraint::intersection(constraint_type)
                         };
                         let mut constraints =
-                            NarrowingConstraints::from_iter([(place, constraint)]);
+                            NarrowingConstraints::from_iter([(place.into(), constraint)]);
                         let argument = &expr_call.arguments.args[0];
                         if let ast::Expr::Subscript(subscript) = argument.expression_value()
                             && let Some((tuple_place, tuple_constraint)) = self
@@ -4730,7 +4785,7 @@ impl<'db> NarrowingConstraintsBuilder<'db, '_> {
                 } else {
                     NarrowingConstraint::intersection(constraint_type)
                 };
-                let mut constraints = NarrowingConstraints::from_iter([(place, constraint)]);
+                let mut constraints = NarrowingConstraints::from_iter([(place.into(), constraint)]);
                 for argument in expr_call.arguments.args.iter().chain(
                     expr_call
                         .arguments
@@ -4770,7 +4825,11 @@ impl<'db> NarrowingConstraintsBuilder<'db, '_> {
             _ => None,
         }?;
 
-        Some(NarrowingConstraints::from_iter([place_and_constraint]))
+        let (place, constraint) = place_and_constraint;
+        Some(NarrowingConstraints::from_iter([(
+            place.into(),
+            constraint,
+        )]))
     }
 
     fn evaluate_negative_match_pattern_singleton(
@@ -4784,7 +4843,7 @@ impl<'db> NarrowingConstraintsBuilder<'db, '_> {
 
         let ty = singleton_pattern_type(db, &self.env, singleton).negate(db, &self.env);
         Some(NarrowingConstraints::from_iter([(
-            place,
+            place.into(),
             NarrowingConstraint::intersection(ty),
         )]))
     }
@@ -4805,7 +4864,7 @@ impl<'db> NarrowingConstraintsBuilder<'db, '_> {
         }
 
         Some(NarrowingConstraints::from_iter([(
-            place,
+            place.into(),
             NarrowingConstraint::intersection(definitely_matched.negate(db, &self.env)),
         )]))
     }
@@ -4844,7 +4903,7 @@ impl<'db> NarrowingConstraintsBuilder<'db, '_> {
         let place = self.expect_place(&subject_place);
 
         PatternNarrowingResult::Possible(Some(NarrowingConstraints::from_iter([(
-            place,
+            place.into(),
             NarrowingConstraint::intersection(narrowed_ty),
         )])))
     }
@@ -4973,7 +5032,7 @@ impl<'db> NarrowingConstraintsBuilder<'db, '_> {
             return PatternNarrowingResult::Possible(None);
         }
         PatternNarrowingResult::Possible(Some(NarrowingConstraints::from_iter([(
-            self.expect_place(&subject),
+            self.expect_place(&subject).into(),
             constraint,
         )])))
     }
@@ -5002,7 +5061,10 @@ impl<'db> NarrowingConstraintsBuilder<'db, '_> {
                 self.comparison_soundness_policy(),
             )
             .map(|ty| {
-                NarrowingConstraints::from_iter([(place, NarrowingConstraint::intersection(ty))])
+                NarrowingConstraints::from_iter([(
+                    place.into(),
+                    NarrowingConstraint::intersection(ty),
+                )])
             })
             .unwrap_or_default();
 
@@ -5028,7 +5090,7 @@ impl<'db> NarrowingConstraintsBuilder<'db, '_> {
                 ast::CmpOp::Eq,
                 is_positive,
             ) {
-                constraints.insert(place, constraint);
+                constraints.insert(place.into(), constraint);
             }
             // Narrow tagged unions of tuples with `Literal` elements, just like `if` statements.
             else if let Some((place, constraint)) = self.narrow_tuple_subscript(
@@ -5039,7 +5101,7 @@ impl<'db> NarrowingConstraintsBuilder<'db, '_> {
                 ast::CmpOp::Eq,
                 is_positive,
             ) {
-                constraints.insert(place, constraint);
+                constraints.insert(place.into(), constraint);
             }
         } else if let ast::Expr::Attribute(attribute) = subject_node {
             let inference = infer_expression_types(db, subject, TypeContext::default());
@@ -5051,7 +5113,7 @@ impl<'db> NarrowingConstraintsBuilder<'db, '_> {
                 ast::CmpOp::Eq,
                 is_positive,
             ) {
-                constraints.insert(place, constraint);
+                constraints.insert(place.into(), constraint);
             }
         }
 
@@ -5679,7 +5741,7 @@ pub(crate) trait NarrowingEvaluatorExtension<'db> {
         db: &'db dyn Db,
         env: &ProgramEnvironment<'db>,
         base_type: Type<'db>,
-        place: ScopedPlaceId,
+        place: impl Into<NarrowingTarget<'db>>,
     ) -> Type<'db>;
 }
 
@@ -5689,7 +5751,7 @@ impl<'db> NarrowingEvaluatorExtension<'db> for NarrowingEvaluator<'_, 'db> {
         db: &'db dyn Db,
         env: &ProgramEnvironment<'db>,
         base_type: Type<'db>,
-        place: ScopedPlaceId,
+        place: impl Into<NarrowingTarget<'db>>,
     ) -> Type<'db> {
         narrow_type_by_constraint(db, env, self, base_type, place)
     }

@@ -15,14 +15,15 @@ use crate::types::constraints::ConstraintSetBuilder;
 use crate::types::diagnostic::{
     CALL_NON_CALLABLE, INVALID_ARGUMENT_TYPE, INVALID_ASSIGNMENT, INVALID_KEY,
     INVALID_TYPE_ARGUMENTS, INVALID_TYPE_FORM, NOT_SUBSCRIPTABLE, POSSIBLY_MISSING_IMPLICIT_CALL,
-    TypedDictDeleteErrorKind, report_cannot_delete_typed_dict_key,
+    POSSIBLY_MISSING_TYPED_DICT_KEY, TypedDictDeleteErrorKind, report_cannot_delete_typed_dict_key,
     report_invalid_arguments_to_annotated, report_not_subscriptable,
 };
 use crate::types::dict::dict_literal_key_value_types;
 use crate::types::generics::{GenericContext, bind_typevar};
 use crate::types::infer::builder::annotation_expression::PEP613Policy;
 use crate::types::infer::builder::{ArgExpr, ArgumentsIter, MultiInferenceGuard};
-use crate::types::infer::{InferenceFlags, TypeExpressionFlags};
+use crate::types::infer::{InferenceFlags, TypeExpressionFlags, infer_definition_types};
+use crate::types::narrow::NarrowingTarget;
 use crate::types::special_form::AliasSpec;
 use crate::types::subscript::{LegacyGenericOrigin, SubscriptError, SubscriptErrorKind};
 use crate::types::tuple::{Tuple, TupleSpecBuilder, TupleType, VariableSegment};
@@ -34,8 +35,8 @@ use crate::types::{
     BoundTypeVarInstance, CallArguments, CallDunderError, CallableBinding, ClassType,
     CycleDetector, DisplaySettings, DynamicType, InternedType, KnownClass, KnownInstanceType,
     LintDiagnosticGuard, MemberLookupPolicy, Parameter, Parameters, SpecialFormType,
-    StaticClassLiteral, Type, TypeAliasType, TypeAndQualifiers, TypeContext, TypeMapping,
-    TypeVarBoundOrConstraints, UnionType, UnionTypeInstance,
+    StaticClassLiteral, StringLiteralType, Type, TypeAliasType, TypeAndQualifiers, TypeContext,
+    TypeMapping, TypeVarBoundOrConstraints, UnionType, UnionTypeInstance,
 };
 use crate::{Db, FxOrderSet, ProgramEnvironment};
 use ty_python_core::definition::Definition;
@@ -496,6 +497,39 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
         }
 
         let slice_ty = self.infer_expression(slice, TypeContext::default());
+        if self
+            .context
+            .is_lint_enabled(&POSSIBLY_MISSING_TYPED_DICT_KEY)
+            && let Some(keys) = string_literal_values(db, slice_ty.resolve_type_alias(db))
+        {
+            for key in keys {
+                if value_ty.typed_dict_key_required(db, env, key) != Some(false) {
+                    continue;
+                }
+                let initial_presence = self.typed_dict_receiver_key_presence(&subscript.value, key);
+                let presence =
+                    PlaceExpr::try_from_expr(subscript).map_or(initial_presence, |place| {
+                        self.narrow_place_with_applicable_constraints(
+                            (&place).into(),
+                            NarrowingTarget::KeyPresence,
+                            initial_presence,
+                            &constraint_keys,
+                        )
+                    });
+                if presence == Type::bool_literal(true) {
+                    continue;
+                }
+                if let Some(builder) = self
+                    .context
+                    .report_lint(&POSSIBLY_MISSING_TYPED_DICT_KEY, slice.as_ref())
+                {
+                    builder.into_diagnostic(format_args!(
+                        "Key {key:?} may be missing from `{}`",
+                        value_ty.display(db, env)
+                    ));
+                }
+            }
+        }
         self.infer_subscript_expression_types(subscript, value_ty, slice_ty, ExprContext::Load)
             .map(|ty| self.narrow_expr_with_applicable_constraints(subscript, ty, &constraint_keys))
             .map_err(|recovery_ty| {
@@ -505,6 +539,78 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
                     &constraint_keys,
                 )
             })
+    }
+
+    fn typed_dict_receiver_key_presence(&self, receiver: &ast::Expr, key: &str) -> Type<'db> {
+        let db = self.db();
+        if let ast::Expr::Call(call) = receiver {
+            return self.typed_dict_key_presence_at_call(
+                call,
+                key,
+                self.expression_type(&call.func),
+            );
+        }
+        let unknown = KnownClass::Bool.to_instance(db, self.program_environment());
+        let Some(place) = PlaceExpr::try_from_expr(receiver) else {
+            return unknown;
+        };
+        let (_, constraints) = self.infer_place_load(&place, receiver.into());
+        let key = StringLiteralType::new(db, key);
+        self.narrow_place_with_applicable_constraints(
+            (&place).into(),
+            |place| NarrowingTarget::ContainsKey(place, key),
+            unknown,
+            &constraints,
+        )
+    }
+
+    /// Keys supplied to a `TypedDict` constructor establish their initial presence.
+    pub(super) fn typed_dict_key_presence_at_definition(
+        &self,
+        definition: Definition<'db>,
+        key: &str,
+    ) -> Type<'db> {
+        let db = self.db();
+        if definition.scope(db) == self.scope()
+            && let Some(ast::Expr::Call(call)) = definition.kind(db).value(self.module())
+            && let Some(callee) =
+                infer_definition_types(db, definition).try_expression_type(&call.func)
+        {
+            return self.typed_dict_key_presence_at_call(call, key, callee);
+        }
+        KnownClass::Bool.to_instance(db, self.program_environment())
+    }
+
+    fn typed_dict_key_presence_at_call(
+        &self,
+        call: &ast::ExprCall,
+        key: &str,
+        callee: Type<'db>,
+    ) -> Type<'db> {
+        let db = self.db();
+        let dict_contains_key = |expr: &ast::Expr| {
+            expr.as_dict_expr().is_some_and(|dict| {
+                dict.iter_keys().flatten().any(|expr| {
+                    expr.as_string_literal_expr()
+                        .is_some_and(|literal| literal.value.to_str() == key)
+                })
+            })
+        };
+        if callee
+            .to_class_type(db)
+            .is_some_and(|class| class.is_typed_dict(db))
+            && (call.arguments.find_keyword(key).is_some()
+                || call.arguments.args.first().is_some_and(dict_contains_key)
+                || call
+                    .arguments
+                    .keywords
+                    .iter()
+                    .any(|keyword| keyword.arg.is_none() && dict_contains_key(&keyword.value)))
+        {
+            Type::bool_literal(true)
+        } else {
+            KnownClass::Bool.to_instance(db, self.program_environment())
+        }
     }
 
     pub(super) fn infer_explicit_class_specialization(
