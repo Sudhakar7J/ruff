@@ -117,7 +117,11 @@ pub(crate) fn register_lints(registry: &mut LintRegistryBuilder) {
     registry.register_lint(&MISMATCHED_TYPE_NAME);
     registry.register_lint(&MISMATCHED_SENTINEL_NAME);
     registry.register_lint(&INVALID_METACLASS);
-    register_overload_declaration_lints(registry);
+    registry.register_lint(&INVALID_OVERLOAD);
+    registry.register_lint(&SINGLE_OVERLOAD);
+    registry.register_lint(&INCONSISTENT_OVERLOAD_DECORATOR);
+    registry.register_lint(&MISSING_OVERLOAD_IMPLEMENTATION);
+    registry.register_lint(&INCONSISTENT_OVERLOAD_IMPLEMENTATION);
     registry.register_lint(&USELESS_OVERLOAD_BODY);
     registry.register_lint(&INVALID_PARAMETER_DEFAULT);
     registry.register_lint(&INVALID_PROTOCOL);
@@ -1503,14 +1507,6 @@ declare_lint! {
         ),
         default_level: Level::Error,
     }
-}
-
-fn register_overload_declaration_lints(registry: &mut LintRegistryBuilder) {
-    registry.register_lint(&INVALID_OVERLOAD);
-    registry.register_lint(&SINGLE_OVERLOAD);
-    registry.register_lint(&INCONSISTENT_OVERLOAD_DECORATOR);
-    registry.register_lint(&MISSING_OVERLOAD_IMPLEMENTATION);
-    registry.register_lint(&INCONSISTENT_OVERLOAD_IMPLEMENTATION);
 }
 
 /// A collection of type check diagnostics.
