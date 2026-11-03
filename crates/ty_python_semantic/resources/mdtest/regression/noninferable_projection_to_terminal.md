@@ -144,7 +144,7 @@ class Manager(Generic[T]):
         # `Socket.__aenter__`'s `Self`, and the bound check rejects `T` even though the
         # receiver is `T & Socket`.
         # error: [invalid-argument-type]
-        # error: [invalid-return-type] "expected `T@Manager`, found `Response | (T@Manager & Socket)`"
+        # error: [invalid-return-statement] "expected `T@Manager`, found `Response | (T@Manager & Socket)`"
         return await self.response.__aenter__()
 ```
 
