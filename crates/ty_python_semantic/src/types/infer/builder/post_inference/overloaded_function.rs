@@ -11,7 +11,9 @@ use crate::{
     types::{
         CallableType, KnownClass, Type,
         context::InferContext,
-        diagnostic::INVALID_OVERLOAD,
+        diagnostic::{
+            INCONSISTENT_OVERLOAD_IMPLEMENTATION, INVALID_OVERLOAD, MISSING_OVERLOAD_IMPLEMENTATION,
+        },
         function::{FunctionDecorators, FunctionType, KnownFunction, OverloadLiteral},
         infer::original_class_type,
         signatures::{ParameterConsistency, ReturnTypeConsistency},
@@ -103,7 +105,7 @@ pub(crate) fn check_overloaded_function<'db>(
 
     if let Some(implementation) = implementation
         && binding_decorator_inconsistencies.is_empty()
-        && context.is_lint_enabled(&INVALID_OVERLOAD)
+        && context.is_lint_enabled(&INCONSISTENT_OVERLOAD_IMPLEMENTATION)
     {
         let implementation_callables = function.implementation_callables(db);
         check_non_generic_overload_implementation_consistency(
@@ -167,7 +169,9 @@ pub(crate) fn check_overloaded_function<'db>(
 
         if implementation_required {
             let function_node = overloads[0].node(db, context.file(), context.module());
-            if let Some(builder) = context.report_lint(&INVALID_OVERLOAD, &function_node.name) {
+            if let Some(builder) =
+                context.report_lint(&MISSING_OVERLOAD_IMPLEMENTATION, &function_node.name)
+            {
                 let mut diagnostic = builder.into_diagnostic(format_args!(
                     "Overloads for function `{}` must be followed by a \
                     non-`@overload`-decorated implementation function",
@@ -306,7 +310,9 @@ fn check_non_generic_overload_implementation_consistency<'db>(
             .any(|callable| callable.signatures(db).overloads.is_empty())
     {
         let function_node = implementation.node(db, context.file(), context.module());
-        if let Some(builder) = context.report_lint(&INVALID_OVERLOAD, &function_node.name) {
+        if let Some(builder) =
+            context.report_lint(&INCONSISTENT_OVERLOAD_IMPLEMENTATION, &function_node.name)
+        {
             builder.into_diagnostic(format_args!(
                 "Overload implementation is not callable after applying decorators"
             ));
@@ -405,7 +411,9 @@ fn check_non_generic_overload_implementation_consistency<'db>(
                 ),
             };
 
-        let Some(builder) = context.report_lint(&INVALID_OVERLOAD, &function_node.name) else {
+        let Some(builder) =
+            context.report_lint(&INCONSISTENT_OVERLOAD_IMPLEMENTATION, &function_node.name)
+        else {
             continue;
         };
         let mut diagnostic = builder.into_diagnostic(format_args!("{message}"));

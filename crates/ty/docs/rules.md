@@ -1290,6 +1290,52 @@ class C(A, B): ...  # error
 
 [method resolution order]: https://docs.python.org/3/glossary.html#term-method-resolution-order
 
+## `inconsistent-overload-implementation`
+
+<small>
+Default level: <a href="../../rules#rule-levels" title="This lint has a default level of 'error'."><code>error</code></a> ·
+Added in <a href="https://github.com/astral-sh/ty/releases/tag/0.0.97">0.0.97</a> ·
+<a href="https://github.com/astral-sh/ty/issues?q=sort%3Aupdated-desc%20is%3Aissue%20is%3Aopen%20%22inconsistent-overload-implementation%22" target="_blank">Related issues</a> ·
+<a href="https://github.com/astral-sh/ruff/blob/main/crates%2Fty_python_semantic%2Fsrc%2Ftypes%2Fdiagnostic.rs#L1477" target="_blank">View source</a>
+</small>
+
+
+**What it does**
+
+
+Checks that an overload implementation is callable after decorators are applied. When the overloads
+and implementation all have non-generic signatures, it also checks that the implementation accepts
+every call allowed by each overload and that each overload's return type is assignable to the
+implementation's return type.
+
+**Why is this bad?**
+
+
+Callers rely on the overloads to know which arguments they can pass and what type to expect in
+return. A call that matches an overload can fail if the implementation requires another argument.
+
+**Example**
+
+
+```py
+from typing import overload
+
+
+@overload
+def read() -> str: ...  # error
+@overload
+def read(size: int) -> str: ...
+def read(size: int) -> str:
+    return "x" * size
+```
+
+Adding a default value for `size` lets the implementation handle `read()` as well as `read(3)`.
+
+**References**
+
+
+- [Typing specification: Implementation consistency](https://typing.python.org/en/latest/spec/overload.html#implementation-consistency)
+
 ## `index-out-of-bounds`
 
 <small>
@@ -2902,20 +2948,18 @@ Added in <a href="https://github.com/astral-sh/ty/releases/tag/0.0.1-alpha.1">0.
 **What it does**
 
 
-Checks for various invalid `@overload` usages.
+Checks that an overloaded function has at least two `@overload` definitions and that its definitions
+agree on `@classmethod` and `@staticmethod`. If you use `@final` or `@override`, put it on the
+implementation, or on the first overload if there is no implementation.
 
 **Why is this bad?**
 
 
-The `@overload` decorator is used to define functions and methods that accepts different
-combinations of arguments and return different types based on the arguments passed. This is mainly
-beneficial for type checkers. But, if the `@overload` usage is invalid, the type checker may not be
-able to provide correct type information.
+An overload describes one of several ways to call a function. With only one signature, the function
+can be annotated directly. Decorators that describe how a method is bound or how it participates in
+inheritance apply to the whole method.
 
-**Examples**
-
-
-**Single overload**
+**Example**
 
 
 ```py
@@ -2924,22 +2968,19 @@ from typing import overload
 
 @overload
 def foo(x: int) -> int: ...  # error
-def foo(x: int | None) -> int | None:
+def foo(x: int) -> int:
     return x
 ```
 
-**Missing implementation**
+**Configuration**
 
 
-```py
-from typing import overload
-
-
-@overload
-def foo() -> None: ...  # error
-@overload
-def foo(x: int) -> int: ...
-```
+Before 0.0.97, [`invalid-overload`](#invalid-overload) also reported missing implementations and implementations
+inconsistent with their overloads. To keep a custom rule level for all three checks, set the same
+level for [`missing-overload-implementation`](#missing-overload-implementation) and [`inconsistent-overload-implementation`](#inconsistent-overload-implementation) as for
+[`invalid-overload`](#invalid-overload). If a `# ty: ignore[invalid-overload]` comment suppressed an implementation
+diagnostic, replace the rule name with the corresponding implementation rule. Keep
+[`invalid-overload`](#invalid-overload) alongside it if you also want to suppress a declaration error on that line.
 
 **References**
 
@@ -4220,6 +4261,49 @@ import urllib3  # error: [missing-direct-dependency]
 ```
 
 Add `urllib3` to `project.dependencies` if your code imports it directly.
+
+## `missing-overload-implementation`
+
+<small>
+Default level: <a href="../../rules#rule-levels" title="This lint has a default level of 'error'."><code>error</code></a> ·
+Added in <a href="https://github.com/astral-sh/ty/releases/tag/0.0.97">0.0.97</a> ·
+<a href="https://github.com/astral-sh/ty/issues?q=sort%3Aupdated-desc%20is%3Aissue%20is%3Aopen%20%22missing-overload-implementation%22" target="_blank">Related issues</a> ·
+<a href="https://github.com/astral-sh/ruff/blob/main/crates%2Fty_python_semantic%2Fsrc%2Ftypes%2Fdiagnostic.rs#L1468" target="_blank">View source</a>
+</small>
+
+
+**What it does**
+
+
+Checks for overloaded functions and methods that require an implementation but have none. An
+implementation can be omitted in a stub file, when all overloads are in `if TYPE_CHECKING` blocks,
+on a protocol method, or when every overload of a method on an abstract base class is decorated with
+`@abstractmethod`.
+
+**Why is this bad?**
+
+
+The `@overload` definitions describe the calls a type checker should accept. A separate
+implementation handles those calls at runtime. Calling a function defined only with `@overload`
+raises an exception.
+
+**Example**
+
+
+```py
+from typing import overload
+
+
+@overload
+def foo() -> None: ...  # error
+@overload
+def foo(x: int) -> int: ...
+```
+
+**References**
+
+
+- [Python documentation: `@overload`](https://docs.python.org/3/library/typing.html#typing.overload)
 
 ## `missing-override-decorator`
 

@@ -117,7 +117,7 @@ pub(crate) fn register_lints(registry: &mut LintRegistryBuilder) {
     registry.register_lint(&MISMATCHED_TYPE_NAME);
     registry.register_lint(&MISMATCHED_SENTINEL_NAME);
     registry.register_lint(&INVALID_METACLASS);
-    registry.register_lint(&INVALID_OVERLOAD);
+    register_overload_declaration_lints(registry);
     registry.register_lint(&USELESS_OVERLOAD_BODY);
     registry.register_lint(&INVALID_PARAMETER_DEFAULT);
     registry.register_lint(&INVALID_PROTOCOL);
@@ -691,7 +691,7 @@ declare_lint! {
 declare_lint! {
     #[doc = include_str!("../../resources/lint_docs/invalid-overload.md")]
     pub(crate) static INVALID_OVERLOAD = {
-        summary: "detects invalid `@overload` usages",
+        summary: "detects invalid overload declarations and inconsistent use of decorators",
         status: LintStatus::stable("0.0.1-alpha.1"),
         default_level: Level::Error,
     }
@@ -1463,6 +1463,30 @@ declare_lint! {
         status: LintStatus::stable("0.0.83"),
         default_level: Level::Warn,
     }
+}
+
+declare_lint! {
+    #[doc = include_str!("../../resources/lint_docs/missing-overload-implementation.md")]
+    pub(crate) static MISSING_OVERLOAD_IMPLEMENTATION = {
+        summary: "detects overloaded functions missing a required implementation",
+        status: LintStatus::stable("0.0.97"),
+        default_level: Level::Error,
+    }
+}
+
+declare_lint! {
+    #[doc = include_str!("../../resources/lint_docs/inconsistent-overload-implementation.md")]
+    pub(crate) static INCONSISTENT_OVERLOAD_IMPLEMENTATION = {
+        summary: "detects implementations that are inconsistent with their overloads",
+        status: LintStatus::stable("0.0.97"),
+        default_level: Level::Error,
+    }
+}
+
+fn register_overload_declaration_lints(registry: &mut LintRegistryBuilder) {
+    registry.register_lint(&INVALID_OVERLOAD);
+    registry.register_lint(&MISSING_OVERLOAD_IMPLEMENTATION);
+    registry.register_lint(&INCONSISTENT_OVERLOAD_IMPLEMENTATION);
 }
 
 /// A collection of type check diagnostics.
