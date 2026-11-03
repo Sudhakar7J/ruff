@@ -12,7 +12,8 @@ use crate::{
         CallableType, KnownClass, Type,
         context::InferContext,
         diagnostic::{
-            INCONSISTENT_OVERLOAD_IMPLEMENTATION, INVALID_OVERLOAD, MISSING_OVERLOAD_IMPLEMENTATION,
+            INCONSISTENT_OVERLOAD_DECORATOR, INCONSISTENT_OVERLOAD_IMPLEMENTATION,
+            MISSING_OVERLOAD_IMPLEMENTATION, SINGLE_OVERLOAD,
         },
         function::{FunctionDecorators, FunctionType, KnownFunction, OverloadLiteral},
         infer::original_class_type,
@@ -119,7 +120,7 @@ pub(crate) fn check_overloaded_function<'db>(
     // Check that the overloaded function has at least two overloads
     if let [single_overload] = overloads {
         let function_node = single_overload.node(db, context.file(), context.module());
-        if let Some(builder) = context.report_lint(&INVALID_OVERLOAD, &function_node.name) {
+        if let Some(builder) = context.report_lint(&SINGLE_OVERLOAD, &function_node.name) {
             let mut diagnostic = builder.into_diagnostic(format_args!(
                 "Overloaded function `{}` requires at least two overloads",
                 function_node.name
@@ -196,7 +197,9 @@ pub(crate) fn check_overloaded_function<'db>(
 
     for inconsistency in binding_decorator_inconsistencies {
         let function_node = function.node(db, context.file(), context.module());
-        if let Some(builder) = context.report_lint(&INVALID_OVERLOAD, &function_node.name) {
+        if let Some(builder) =
+            context.report_lint(&INCONSISTENT_OVERLOAD_DECORATOR, &function_node.name)
+        {
             let mut diagnostic = builder.into_diagnostic(format_args!(
                 "Overloaded function `{}` does not use the `@{}` decorator \
                     consistently",
@@ -227,7 +230,8 @@ pub(crate) fn check_overloaded_function<'db>(
                     continue;
                 }
                 let function_node = overload.node(db, context.file(), context.module());
-                let Some(builder) = context.report_lint(&INVALID_OVERLOAD, &function_node.name)
+                let Some(builder) =
+                    context.report_lint(&INCONSISTENT_OVERLOAD_DECORATOR, &function_node.name)
                 else {
                     continue;
                 };
@@ -259,7 +263,8 @@ pub(crate) fn check_overloaded_function<'db>(
                     continue;
                 }
                 let function_node = overload.node(db, context.file(), context.module());
-                let Some(builder) = context.report_lint(&INVALID_OVERLOAD, &function_node.name)
+                let Some(builder) =
+                    context.report_lint(&INCONSISTENT_OVERLOAD_DECORATOR, &function_node.name)
                 else {
                     continue;
                 };

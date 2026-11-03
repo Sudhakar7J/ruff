@@ -1290,6 +1290,50 @@ class C(A, B): ...  # error
 
 [method resolution order]: https://docs.python.org/3/glossary.html#term-method-resolution-order
 
+## `inconsistent-overload-decorator`
+
+<small>
+Default level: <a href="../../rules#rule-levels" title="This lint has a default level of 'error'."><code>error</code></a> ·
+Added in <a href="https://github.com/astral-sh/ty/releases/tag/0.0.97">0.0.97</a> ·
+<a href="https://github.com/astral-sh/ty/issues?q=sort%3Aupdated-desc%20is%3Aissue%20is%3Aopen%20%22inconsistent-overload-decorator%22" target="_blank">Related issues</a> ·
+<a href="https://github.com/astral-sh/ruff/blob/main/crates%2Fty_python_semantic%2Fsrc%2Ftypes%2Fdiagnostic.rs#L1486" target="_blank">View source</a>
+</small>
+
+
+**What it does**
+
+
+Checks that the declarations and implementation of an overloaded method agree on `@classmethod` and
+`@staticmethod`. If an overloaded function or method uses `@final` or `@override`, the decorator
+belongs on the implementation, or on the first overload when there is no implementation.
+
+**Why is this bad?**
+
+
+Every overload describes the same function. For example, if one overload is a static method and
+another is an instance method, they disagree on whether Python passes the instance as the first
+argument.
+
+**Example**
+
+
+```pyi
+from typing import overload
+
+class Reader:
+    @staticmethod
+    @overload
+    def read() -> str: ...
+    @overload
+    def read(self, size: int) -> str: ...  # error
+```
+
+**References**
+
+
+- For help updating an `invalid-overload` setting or ignore comment, see [`single-overload`](#single-overload).
+- [Typing specification: Invalid overload definitions](https://typing.python.org/en/latest/spec/overload.html#invalid-overload-definitions)
+
 ## `inconsistent-overload-implementation`
 
 <small>
@@ -2934,58 +2978,6 @@ Bar = NewType(get_name(), int)  # error
 # invalid base for `typing.NewType`
 Baz = NewType("Baz", int | str)  # error
 ```
-
-## `invalid-overload`
-
-<small>
-Default level: <a href="../../rules#rule-levels" title="This lint has a default level of 'error'."><code>error</code></a> ·
-Added in <a href="https://github.com/astral-sh/ty/releases/tag/0.0.1-alpha.1">0.0.1-alpha.1</a> ·
-<a href="https://github.com/astral-sh/ty/issues?q=sort%3Aupdated-desc%20is%3Aissue%20is%3Aopen%20%22invalid-overload%22" target="_blank">Related issues</a> ·
-<a href="https://github.com/astral-sh/ruff/blob/main/crates%2Fty_python_semantic%2Fsrc%2Ftypes%2Fdiagnostic.rs#L691" target="_blank">View source</a>
-</small>
-
-
-**What it does**
-
-
-Checks that an overloaded function has at least two `@overload` definitions and that its definitions
-agree on `@classmethod` and `@staticmethod`. If you use `@final` or `@override`, put it on the
-implementation, or on the first overload if there is no implementation.
-
-**Why is this bad?**
-
-
-An overload describes one of several ways to call a function. With only one signature, the function
-can be annotated directly. Decorators that describe how a method is bound or how it participates in
-inheritance apply to the whole method.
-
-**Example**
-
-
-```py
-from typing import overload
-
-
-@overload
-def foo(x: int) -> int: ...  # error
-def foo(x: int) -> int:
-    return x
-```
-
-**Configuration**
-
-
-Before 0.0.97, [`invalid-overload`](#invalid-overload) also reported missing implementations and implementations
-inconsistent with their overloads. To keep a custom rule level for all three checks, set the same
-level for [`missing-overload-implementation`](#missing-overload-implementation) and [`inconsistent-overload-implementation`](#inconsistent-overload-implementation) as for
-[`invalid-overload`](#invalid-overload). If a `# ty: ignore[invalid-overload]` comment suppressed an implementation
-diagnostic, replace the rule name with the corresponding implementation rule. Keep
-[`invalid-overload`](#invalid-overload) alongside it if you also want to suppress a declaration error on that line.
-
-**References**
-
-
-- [Python documentation: `@overload`](https://docs.python.org/3/library/typing.html#typing.overload)
 
 ## `invalid-parameter-default`
 
@@ -5837,6 +5829,56 @@ class Outer[T]:
 
 
 - [Typing spec: Generics](https://typing.python.org/en/latest/spec/generics.html#introduction)
+
+## `single-overload`
+
+<small>
+Default level: <a href="../../rules#rule-levels" title="This lint has a default level of 'error'."><code>error</code></a> ·
+Added in <a href="https://github.com/astral-sh/ty/releases/tag/0.0.97">0.0.97</a> ·
+<a href="https://github.com/astral-sh/ty/issues?q=sort%3Aupdated-desc%20is%3Aissue%20is%3Aopen%20%22single-overload%22" target="_blank">Related issues</a> ·
+<a href="https://github.com/astral-sh/ruff/blob/main/crates%2Fty_python_semantic%2Fsrc%2Ftypes%2Fdiagnostic.rs#L691" target="_blank">View source</a>
+</small>
+
+
+**What it does**
+
+
+Checks for functions and methods with only one `@overload` declaration.
+
+**Why is this bad?**
+
+
+An overload describes one of several ways to call a function. If one signature describes all valid
+calls, annotate the implementation directly and remove the overload declaration. In a stub file,
+keep the declaration and remove the `@overload` decorator.
+
+**Example**
+
+
+```py
+from typing import overload
+
+
+@overload
+def foo(x: int) -> int: ...  # error
+def foo(x: int) -> int:
+    return x
+```
+
+**Migrating from `invalid-overload`**
+
+
+In 0.0.97, four rules replace `invalid-overload`. To keep a custom level for all the checks it
+covered, replace the old setting with the same level for [`single-overload`](#single-overload),
+[`inconsistent-overload-decorator`](#inconsistent-overload-decorator), [`missing-overload-implementation`](#missing-overload-implementation), and
+[`inconsistent-overload-implementation`](#inconsistent-overload-implementation). In a `ty: ignore` comment, list only the diagnostics you
+want to suppress on that line. For example, to allow a lone overload without a required
+implementation, use `# ty: ignore[single-overload, missing-overload-implementation]`.
+
+**References**
+
+
+- [Python documentation: `@overload`](https://docs.python.org/3/library/typing.html#typing.overload)
 
 ## `static-assert-error`
 

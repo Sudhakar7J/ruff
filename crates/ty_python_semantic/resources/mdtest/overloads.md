@@ -800,7 +800,7 @@ At least two `@overload`-decorated definitions must be present.
 from typing import overload
 
 @overload
-# error: [invalid-overload]
+# error: [single-overload]
 def func(x: int) -> int: ...
 def func(x: int | str) -> int | str:
     return x
@@ -810,7 +810,7 @@ def func(x: int | str) -> int | str:
 from typing import overload
 
 @overload
-# error: [invalid-overload]
+# error: [single-overload]
 def func(x: int) -> int: ...
 ```
 
@@ -1504,12 +1504,12 @@ info: the first tuple element is not compatible: `str` is not assignable to `int
 
 ### Configuring overload diagnostics
 
-Disabling `invalid-overload` permits a single overload declaration. ty still checks whether it has
-an implementation and whether the implementation accepts the declared arguments.
+Disabling `single-overload` permits a single overload declaration. ty still checks its decorators
+and whether it has a compatible implementation.
 
 ```toml
 [rules]
-invalid-overload = "ignore"
+single-overload = "ignore"
 ```
 
 ```py
@@ -1523,22 +1523,47 @@ def mismatch() -> int:
     return 0
 ```
 
-### Suppressing overload implementation diagnostics
+```py
+from typing import final
 
-If you suppress an implementation diagnostic on a lone overload, ty still reports `invalid-overload`
+class C:
+    @overload
+    @final
+    def method(self) -> int: ...  # error: [inconsistent-overload-decorator]
+    def method(self) -> int:
+        return 1
+```
+
+### Suppressing overload diagnostics
+
+If you suppress an implementation diagnostic on a lone overload, ty still reports `single-overload`
 because it requires at least two overload declarations.
 
 ```py
 from typing import overload
 
 @overload
-# error: [invalid-overload]
+# error: [single-overload]
 def missing(x: int) -> int: ...  # ty: ignore[missing-overload-implementation]
 @overload
-# error: [invalid-overload]
+# error: [single-overload]
 def mismatch(x: int) -> int: ...  # ty: ignore[inconsistent-overload-implementation]
 def mismatch() -> int:
     return 0
+```
+
+Likewise, ignoring a misplaced `@final` on a single overload suppresses only the decorator error.
+
+```py
+from typing import final
+
+class C:
+    @overload
+    @final
+    # error: [single-overload]
+    def method(self) -> int: ...  # ty: ignore[inconsistent-overload-decorator]
+    def method(self) -> int:
+        return 1
 ```
 
 ### Inconsistent decorators
@@ -1559,7 +1584,7 @@ class CheckStaticMethod:
     @overload
     def method1(self, x: str) -> str: ...
     @staticmethod
-    # error: [invalid-overload] "Overloaded function `method1` does not use the `@staticmethod` decorator consistently"
+    # error: [inconsistent-overload-decorator] "Overloaded function `method1` does not use the `@staticmethod` decorator consistently"
     def method1(self, x: int | str) -> int | str:
         return x
 
@@ -1569,7 +1594,7 @@ class CheckStaticMethod:
     @staticmethod
     def method2(self, x: str) -> str: ...
     @staticmethod
-    # error: [invalid-overload]
+    # error: [inconsistent-overload-decorator]
     def method2(self, x: int | str) -> int | str:
         return x
 
@@ -1579,7 +1604,7 @@ class CheckStaticMethod:
     @overload
     @staticmethod
     def method3(self, x: str) -> str: ...
-    # error: [invalid-overload]
+    # error: [inconsistent-overload-decorator]
     def method3(self, x: int | str) -> int | str:
         return x
 
@@ -1624,13 +1649,13 @@ class Widget:
     @staticmethod
     def method(source: str, index: int) -> int: ...
     @overload
-    # error: [invalid-overload] "Overloaded function `method` does not use the `@staticmethod` decorator consistently"
+    # error: [inconsistent-overload-decorator] "Overloaded function `method` does not use the `@staticmethod` decorator consistently"
     def method(self, index: int) -> str: ...
     @overload
     def reversed(self, index: int) -> str: ...
     @overload
     @staticmethod
-    # error: [invalid-overload]
+    # error: [inconsistent-overload-decorator]
     def reversed(source: str, index: int) -> int: ...
 ```
 
@@ -1670,7 +1695,7 @@ class CheckClassMethod:
     @overload
     def try_from1(cls, x: str) -> None: ...
     @classmethod
-    # error: [invalid-overload] "Overloaded function `try_from1` does not use the `@classmethod` decorator consistently"
+    # error: [inconsistent-overload-decorator] "Overloaded function `try_from1` does not use the `@classmethod` decorator consistently"
     def try_from1(cls, x: int | str) -> CheckClassMethod | None:
         if isinstance(x, int):
             return cls(x)
@@ -1682,7 +1707,7 @@ class CheckClassMethod:
     @classmethod
     def try_from2(cls, x: str) -> None: ...
     @classmethod
-    # error: [invalid-overload]
+    # error: [inconsistent-overload-decorator]
     def try_from2(cls, x: int | str) -> CheckClassMethod | None:
         if isinstance(x, int):
             return cls(x)
@@ -1694,7 +1719,7 @@ class CheckClassMethod:
     @overload
     @classmethod
     def try_from3(cls, x: str) -> None: ...
-    # error: [invalid-overload]
+    # error: [inconsistent-overload-decorator]
     def try_from3(cls, x: int | str) -> CheckClassMethod | None:
         if isinstance(x, int):
             # error: [call-non-callable]
@@ -1769,13 +1794,13 @@ class Factory:
     @classmethod
     def method(cls: type[Factory], value: int) -> int: ...
     @overload
-    # error: [invalid-overload] "Overloaded function `method` does not use the `@classmethod` decorator consistently"
+    # error: [inconsistent-overload-decorator] "Overloaded function `method` does not use the `@classmethod` decorator consistently"
     def method(self, value: int) -> str: ...
     @overload
     def reversed(self, value: int) -> str: ...
     @overload
     @classmethod
-    # error: [invalid-overload]
+    # error: [inconsistent-overload-decorator]
     def reversed(cls: type[Factory], value: int) -> int: ...
 ```
 
@@ -1811,7 +1836,7 @@ class Foo:
 
     @overload
     @final
-    # error: [invalid-overload]
+    # error: [inconsistent-overload-decorator]
     def method2(self, x: int) -> int: ...
     @overload
     def method2(self, x: str) -> str: ...
@@ -1822,7 +1847,7 @@ class Foo:
     def method3(self, x: int) -> int: ...
     @overload
     @final
-    # error: [invalid-overload]
+    # error: [inconsistent-overload-decorator]
     def method3(self, x: str) -> str: ...
     def method3(self, x: int | str) -> int | str:
         return x
@@ -1844,16 +1869,16 @@ class Foo:
     def method2(self, x: int) -> int: ...
     @final
     @overload
-    # error: [invalid-overload]
+    # error: [inconsistent-overload-decorator]
     def method2(self, x: str) -> str: ...
     @overload
     def method3(self, x: int) -> int: ...
     @final
     @overload
-    def method3(self, x: str) -> int: ...  # error: [invalid-overload]
+    def method3(self, x: str) -> int: ...  # error: [inconsistent-overload-decorator]
     @overload
     @final
-    def method3(self, x: bytes) -> bytes: ...  # error: [invalid-overload]
+    def method3(self, x: bytes) -> bytes: ...  # error: [inconsistent-overload-decorator]
     @overload
     def method3(self, x: bytearray) -> bytearray: ...
 ```
@@ -1889,7 +1914,7 @@ class Sub2(Base):
     def method(self, x: int) -> int: ...
     @overload
     @override
-    # error: [invalid-overload]
+    # error: [inconsistent-overload-decorator]
     def method(self, x: str) -> str: ...
     def method(self, x: int | str) -> int | str:
         return x
@@ -1897,7 +1922,7 @@ class Sub2(Base):
 class Sub3(Base):
     @overload
     @override
-    # error: [invalid-overload]
+    # error: [inconsistent-overload-decorator]
     def method(self, x: int) -> int: ...
     @overload
     def method(self, x: str) -> str: ...
@@ -1928,7 +1953,7 @@ class Sub2(Base):
     def method(self, x: int) -> int: ...
     @overload
     @override
-    # error: [invalid-overload]
+    # error: [inconsistent-overload-decorator]
     def method(self, x: str) -> str: ...
 ```
 
