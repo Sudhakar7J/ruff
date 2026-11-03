@@ -114,8 +114,8 @@ use crate::types::visitor::{
     walk_non_atomic_type, walk_type_with_recursion_guard,
 };
 use crate::types::{
-    ApplyTypeMappingVisitor, BoundTypeVarInstance, DynamicType, IntersectionType, Type,
-    TypeContext, TypeMapping, TypePair, TypeVarBoundOrConstraints, TypeVarVariance, UnionType,
+    ApplyTypeMappingVisitor, BoundTypeVarInstance, IntersectionType, Type, TypeContext,
+    TypeMapping, TypePair, TypeVarBoundOrConstraints, TypeVarVariance, UnionType,
 };
 use crate::{Db, FxIndexMap, FxIndexSet, FxOrderMap, FxOrderSet, ProgramEnvironment};
 
@@ -132,7 +132,7 @@ use owned::OwnedConstraintSetBuilder;
 use paths::PathAssignments;
 use solutions::{Polarity, SolutionWalker};
 pub(crate) use variables::ConstraintProvenance;
-use variables::{AtomicConstraint, Constraint};
+use variables::{AtomicConstraint, Constraint, UnspecializedTypeVarPolicy};
 
 /// An extension trait for building constraint sets from [`Option`] values.
 pub(crate) trait OptionConstraintsExtension<T> {
@@ -3834,6 +3834,49 @@ impl<'db> Type<'db> {
         let program = env.program(db);
         assignable_solutions_impl(db, program, self, target, inferable)
     }
+
+    /// Calculates the [`CandidateSolutions`] that represent the valid solutions for when `self` is
+    /// constraint-set assignable to `target`.
+    ///
+    /// Unlike [`Self::assignable_solutions_with_inferable`], this method preserves unspecialized
+    /// type variables in the solution set.
+    pub(crate) fn assignable_solutions_for_argument_context(
+        self,
+        db: &'db dyn Db,
+        env: &ProgramEnvironment<'db>,
+        target: Type<'db>,
+        inferable: TypeVarSet<'db>,
+    ) -> &'db CandidateSolutions<'db> {
+        #[salsa::tracked(
+            returns(ref),
+            cycle_initial=|_, _, _, _, _, _| CandidateSolutions::Unsatisfiable,
+            heap_size=ruff_memory_usage::heap_size,
+        )]
+        fn assignable_solutions_for_argument_context_impl<'db>(
+            db: &'db dyn Db,
+            program: Program<'db>,
+            source: Type<'db>,
+            target: Type<'db>,
+            inferable: TypeVarSet<'db>,
+        ) -> CandidateSolutions<'db> {
+            let env = &ProgramEnvironment::from_program(program);
+            let when = source.when_constraint_set_assignable_to_owned(db, env, target);
+            when.query(|builder, when| {
+                let mut storage = builder.storage.borrow_mut();
+                CandidateSolutions::compute_for_argument_context(
+                    db,
+                    env,
+                    &mut storage,
+                    when.node,
+                    inferable,
+                    when.source_order,
+                )
+            })
+        }
+
+        let program = env.program(db);
+        assignable_solutions_for_argument_context_impl(db, program, self, target, inferable)
+    }
 }
 
 #[salsa::tracked(
@@ -3942,6 +3985,28 @@ impl<'db> CandidateSolutions<'db> {
             inferable,
             source_order,
             UnboundedSolutionLimits,
+            UnspecializedTypeVarPolicy::Ignore,
+        );
+        result
+    }
+
+    fn compute_for_argument_context(
+        db: &'db dyn Db,
+        env: &ProgramEnvironment<'db>,
+        storage: &mut ConstraintSetStorage<'db>,
+        node: NodeId,
+        inferable: TypeVarSet<'db>,
+        source_order: Option<SourceOrderId>,
+    ) -> Self {
+        let ControlFlow::Continue(result) = Self::compute_with_limits(
+            db,
+            env,
+            storage,
+            node,
+            inferable,
+            source_order,
+            UnboundedSolutionLimits,
+            UnspecializedTypeVarPolicy::Retain,
         );
         result
     }
@@ -3964,12 +4029,22 @@ impl<'db> CandidateSolutions<'db> {
             remaining_paths: budget.paths,
             remaining_visits: budget.visits,
         };
-        match Self::compute_with_limits(db, env, storage, node, inferable, source_order, limits) {
+        match Self::compute_with_limits(
+            db,
+            env,
+            storage,
+            node,
+            inferable,
+            source_order,
+            limits,
+            UnspecializedTypeVarPolicy::Ignore,
+        ) {
             ControlFlow::Continue(result) => Ok(result),
             ControlFlow::Break(error) => Err(error),
         }
     }
 
+    #[expect(clippy::too_many_arguments)]
     fn compute_with_limits<L: SolutionLimits>(
         db: &'db dyn Db,
         env: &ProgramEnvironment<'db>,
@@ -3978,6 +4053,7 @@ impl<'db> CandidateSolutions<'db> {
         inferable: TypeVarSet<'db>,
         source_order: Option<SourceOrderId>,
         mut limits: L,
+        unspecialized_type_var_policy: UnspecializedTypeVarPolicy,
     ) -> ControlFlow<L::Break, Self> {
         let source_orders = storage.calculate_source_orders(source_order);
         if let Some(path_bounds) = Self::compute_simple_bound_conjunction(
@@ -3992,7 +4068,8 @@ impl<'db> CandidateSolutions<'db> {
             return ControlFlow::Continue(path_bounds);
         }
 
-        let mut walker = SolutionWalker::new(db, storage, source_orders, inferable, limits, node);
+        let mut walker = SolutionWalker::new(db, storage, source_orders, inferable, limits, node)
+            .with_unspecialized_type_var_policy(unspecialized_type_var_policy);
         // Sequent discovery must also happen in source order. Sorting the collected paths is
         // too late: sequent pairs are not commutative, and TDD traversal order can otherwise
         // discard gradual evidence before solution extraction.
@@ -4030,10 +4107,7 @@ impl<'db> CandidateSolutions<'db> {
     ) -> ControlFlow<L::Break, Option<Self>> {
         let bound_is_ineligible = |ty: Type<'db>| {
             any_over_type_expanding_aliases(db, env, ty, |nested| {
-                nested.is_type_var()
-                    || nested
-                        .as_dynamic()
-                        .is_some_and(DynamicType::is_provisional_marker)
+                nested.is_type_var() || nested.is_provisional_marker()
             })
         };
 
@@ -4205,6 +4279,22 @@ impl<'db> CandidateSolutions<'db> {
         inferable: TypeVarSet<'db>,
     ) -> Solutions<'db> {
         self.solve_with(|_variance, path_bound| path_bound.solve(db, env, builder, inferable))
+    }
+
+    pub(crate) fn solve_for_argument_context(
+        &self,
+        db: &'db dyn Db,
+        env: &ProgramEnvironment<'db>,
+        builder: &ConstraintSetBuilder<'db>,
+    ) -> Solutions<'db> {
+        self.solve_with(|_variance, path_bound| {
+            match path_bound.preliminary_solve(db, env, builder) {
+                PathBoundSolution::Solved(ty) if ty.is_provisional_marker() => {
+                    PathBoundSolution::Unsolved
+                }
+                solution => solution,
+            }
+        })
     }
 
     /// Solves each path by applying a per-typevar solver function, collecting retained solutions.

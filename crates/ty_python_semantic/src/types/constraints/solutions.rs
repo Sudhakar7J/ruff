@@ -11,6 +11,7 @@ use crate::types::constraints::sequents::SequentMap;
 use crate::types::constraints::support::Support;
 use crate::types::constraints::variables::{
     AtomicConstraint, Constraint, ConstraintProvenance, UnsatisfiableBound,
+    UnspecializedTypeVarPolicy,
 };
 use crate::types::constraints::{
     ALWAYS_FALSE, ALWAYS_TRUE, Assignment, AtomicConstraintId, BoundedSolutionLimits,
@@ -101,6 +102,8 @@ pub(super) struct SolutionWalker<'db, L> {
     /// [`Invalid`][SolutionValidity::Invalid].
     pending: Vec<PendingCandidateSolution<'db>>,
 
+    unspecialized_type_var_policy: UnspecializedTypeVarPolicy,
+
     _phantom: PhantomData<&'db ()>,
 }
 
@@ -134,8 +137,17 @@ impl<'db, L: SolutionLimits> SolutionWalker<'db, L> {
             explored_nodes: FxHashSet::default(),
             node_is_satisfiable_on_path_cache: FxHashMap::default(),
             pending: Vec::default(),
+            unspecialized_type_var_policy: UnspecializedTypeVarPolicy::Ignore,
             _phantom: PhantomData,
         }
+    }
+
+    pub(super) fn with_unspecialized_type_var_policy(
+        mut self,
+        unspecialized_type_var_policy: UnspecializedTypeVarPolicy,
+    ) -> Self {
+        self.unspecialized_type_var_policy = unspecialized_type_var_policy;
+        self
     }
 
     /// Returns an iterator of the positive and negative constraints on the current path
@@ -756,13 +768,12 @@ impl<'db, L: SolutionLimits> SolutionWalker<'db, L> {
         for constraint in constraints {
             let constraint = storage.atomic_constraint_data(constraint);
             if constraint.provides_bound_for(db, bound_typevar)
-                && constraint.provenance().is_evidence()
-                && !constraint
-                    .provenance()
-                    .contains(ConstraintProvenance::VALIDITY)
-                && constraint
-                    .as_concrete()
-                    .is_none_or(|(_, bound)| !bound.has_unspecialized_type_var(db, env))
+                && constraint.provides_candidate_evidence(
+                    db,
+                    env,
+                    constraint.as_concrete().map(|(_, bound)| bound),
+                    UnspecializedTypeVarPolicy::Ignore,
+                )
             {
                 evidence.add_constraint(db, bound_typevar, constraint);
             }
@@ -980,15 +991,13 @@ impl<'db, L: SolutionLimits> SolutionWalker<'db, L> {
                 continue;
             };
             let constraint = storage.atomic_constraint_data(constraint_id);
-            if !constraint.provenance().is_evidence()
-                || constraint
-                    .provenance()
-                    .contains(ConstraintProvenance::VALIDITY)
-            {
-                continue;
-            }
             if let Some(upper) = constraint.upper_bound_for(db, bound_typevar)
-                && !upper.has_unspecialized_type_var(db, env)
+                && constraint.provides_candidate_evidence(
+                    db,
+                    env,
+                    Some(upper),
+                    UnspecializedTypeVarPolicy::Ignore,
+                )
             {
                 let order = self
                     .source_orders
@@ -1556,11 +1565,21 @@ impl<'db, L: SolutionLimits> SolutionWalker<'db, L> {
         let mut mappings: FxIndexMap<BoundTypeVarInstance<'db>, CandidateTypeVarSolver<'db>> =
             FxIndexMap::default();
 
-        // An unspecialized outer variable supplies no inference evidence, but it may provide a
-        // useful validity bound.
-        let is_useful_bound = |provenance: ConstraintProvenance, bound: Type<'db>| {
-            provenance.contains(ConstraintProvenance::VALIDITY)
-                || !bound.has_unspecialized_type_var(db, env)
+        let is_useful_bound = |constraint: AtomicConstraint<'db>, bound: Type<'db>| {
+            // Validity bounds are retained even if they contain unspecialized type variables.
+            if constraint
+                .provenance()
+                .contains(ConstraintProvenance::VALIDITY)
+            {
+                return true;
+            }
+
+            constraint.provides_candidate_evidence(
+                db,
+                env,
+                Some(bound),
+                self.unspecialized_type_var_policy,
+            )
         };
 
         for (constraint, _) in typevars {
@@ -1568,21 +1587,21 @@ impl<'db, L: SolutionLimits> SolutionWalker<'db, L> {
             match constraint {
                 AtomicConstraint::ConcreteLower(lower)
                     if lower.typevar.is_inferable(db, self.inferable)
-                        && is_useful_bound(lower.provenance, lower.bound) =>
+                        && is_useful_bound(constraint, lower.bound) =>
                 {
                     let solver = mappings.entry(lower.typevar).or_default();
                     solver.add_constraint(db, lower.typevar, constraint);
                 }
                 AtomicConstraint::ConcreteUpper(upper)
                     if upper.typevar.is_inferable(db, self.inferable)
-                        && is_useful_bound(upper.provenance, upper.bound) =>
+                        && is_useful_bound(constraint, upper.bound) =>
                 {
                     let solver = mappings.entry(upper.typevar).or_default();
                     solver.add_constraint(db, upper.typevar, constraint);
                 }
                 AtomicConstraint::ConcreteEquivalence(equivalence)
                     if equivalence.typevar.is_inferable(db, self.inferable)
-                        && is_useful_bound(equivalence.provenance, equivalence.bound) =>
+                        && is_useful_bound(constraint, equivalence.bound) =>
                 {
                     let solver = mappings.entry(equivalence.typevar).or_default();
                     solver.add_constraint(db, equivalence.typevar, constraint);
@@ -1596,11 +1615,11 @@ impl<'db, L: SolutionLimits> SolutionWalker<'db, L> {
                     {
                         continue;
                     }
-                    if is_useful_bound(bound.provenance, Type::TypeVar(bound.right)) {
+                    if is_useful_bound(constraint, Type::TypeVar(bound.right)) {
                         let solver = mappings.entry(bound.left).or_default();
                         solver.add_constraint(db, bound.left, constraint);
                     }
-                    if is_useful_bound(bound.provenance, Type::TypeVar(bound.left)) {
+                    if is_useful_bound(constraint, Type::TypeVar(bound.left)) {
                         let solver = mappings.entry(bound.right).or_default();
                         solver.add_constraint(db, bound.right, constraint);
                     }
@@ -1615,11 +1634,11 @@ impl<'db, L: SolutionLimits> SolutionWalker<'db, L> {
                     {
                         continue;
                     }
-                    if is_useful_bound(bound.provenance, Type::TypeVar(right)) {
+                    if is_useful_bound(constraint, Type::TypeVar(right)) {
                         let solver = mappings.entry(left).or_default();
                         solver.add_constraint(db, left, constraint);
                     }
-                    if is_useful_bound(bound.provenance, Type::TypeVar(left)) {
+                    if is_useful_bound(constraint, Type::TypeVar(left)) {
                         let solver = mappings.entry(right).or_default();
                         solver.add_constraint(db, right, constraint);
                     }

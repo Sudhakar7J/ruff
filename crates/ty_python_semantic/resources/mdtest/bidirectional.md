@@ -2775,13 +2775,19 @@ _: list[int | str] = f12()  # error: [invalid-assignment]
 reveal_type(f12)  # revealed: () -> list[int]
 ```
 
-A `Callable` annotation containing unspecialized type variables does not provide useful type context
-to a lambda expression:
+A partially unspecialized `Callable` annotation still provides useful type context for a lambda
+expression:
 
 ```py
 def f[T](callback: Callable[[T], None]) -> None: ...
 
 f(reveal_type(lambda x: None))  # revealed: (x) -> None
+
+def consume[T](callback: Callable[[T, int], int]) -> None:
+    pass
+
+consume(id(lambda x, y: reveal_type(y)))  # revealed: int
+consume(id(lambda x, y: y.upper()))  # error: [unresolved-attribute]
 ```
 
 ## Lambda contextual inference through type aliases

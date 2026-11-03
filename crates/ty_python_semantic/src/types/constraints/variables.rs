@@ -15,6 +15,13 @@ use crate::types::typevar::{BoundTypeVarInstance, TypeVarDomain};
 use crate::types::{ApplyTypeMappingVisitor, Type, TypeContext, TypeMapping};
 use crate::{Db, ProgramEnvironment};
 
+/// The solver policy for handling unspecialized type variables as inference evidence.
+#[derive(Clone, Copy)]
+pub(super) enum UnspecializedTypeVarPolicy {
+    Retain,
+    Ignore,
+}
+
 bitflags::bitflags! {
     /// The _provenance_ of a BDD constraint.
     ///
@@ -446,6 +453,23 @@ impl<'db> AtomicConstraint<'db> {
             AtomicConstraint::TypeVarRange(this) => this.provenance,
             AtomicConstraint::TypeVarEquivalence(this) => this.provenance,
         }
+    }
+
+    /// Whether this constraint supplies evidence independently of validity bounds.
+    pub(super) fn provides_candidate_evidence(
+        self,
+        db: &'db dyn Db,
+        env: &ProgramEnvironment<'db>,
+        bound: Option<Type<'db>>,
+        unspecialized_type_var_policy: UnspecializedTypeVarPolicy,
+    ) -> bool {
+        !self.provenance().contains(ConstraintProvenance::VALIDITY)
+            && match unspecialized_type_var_policy {
+                UnspecializedTypeVarPolicy::Retain => true,
+                UnspecializedTypeVarPolicy::Ignore => {
+                    bound.is_none_or(|bound| !bound.has_unspecialized_type_var(db, env))
+                }
+            }
     }
 
     pub(super) fn with_provenance(mut self, provenance: ConstraintProvenance) -> Self {

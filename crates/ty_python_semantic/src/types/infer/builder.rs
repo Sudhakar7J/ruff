@@ -9051,7 +9051,10 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
             None => [].iter(),
             Some(signature) => signature.parameters().into_iter(),
         }
-        .map(Parameter::annotated_type);
+        .map(|parameter| {
+            let ty = parameter.annotated_type();
+            (!ty.is_provisional_marker()).then_some(ty)
+        });
 
         let parameters = if let Some(parameters) = parameters {
             let positional_only = parameters
@@ -9065,12 +9068,7 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
                                 .replace_parameter_defaults(db, env)
                         }));
 
-                    if let Some(annotated_type) = parameter_types.next()
-                        && !matches!(
-                            annotated_type,
-                            Type::Dynamic(DynamicType::UnspecializedTypeVar)
-                        )
-                    {
+                    if let Some(annotated_type) = parameter_types.next().flatten() {
                         parameter.with_annotated_type(annotated_type)
                     } else {
                         parameter
@@ -9088,12 +9086,7 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
                                 .replace_parameter_defaults(db, env)
                         }));
 
-                    if let Some(annotated_type) = parameter_types.next()
-                        && !matches!(
-                            annotated_type,
-                            Type::Dynamic(DynamicType::UnspecializedTypeVar)
-                        )
-                    {
+                    if let Some(annotated_type) = parameter_types.next().flatten() {
                         parameter.with_annotated_type(annotated_type)
                     } else {
                         parameter

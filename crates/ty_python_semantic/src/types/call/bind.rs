@@ -5993,7 +5993,7 @@ fn parameter_context_specialization<'db>(
 
             let argument_constraints = argument_specialization
                 .and_then(|specialization| specialization.get(db, typevar))
-                .filter(|ty| !ty.has_provisional_marker(db, env))
+                .filter(|ty| !ty.is_provisional_marker())
                 .map(|ty| {
                     let promoted = ty.promote(db, env);
                     let Some(bound) = typevar.typevar(db).upper_bound(db, env) else {
@@ -8943,16 +8943,14 @@ impl<'db> Binding<'db> {
         if let Some(declared_return_ty) = call_expression_tcx.annotation {
             let inferable = generic_context.inferable_typevars(db);
             let normalized_return_ty = self.unspecialized_return_type(db);
-            let path_bounds = normalized_return_ty.assignable_solutions_with_inferable(
+            let path_bounds = normalized_return_ty.assignable_solutions_for_argument_context(
                 db,
                 env,
                 declared_return_ty,
                 inferable,
             );
 
-            let solutions = path_bounds.solve_with(|_variance, path_bound| {
-                path_bound.preliminary_solve(db, env, constraints)
-            });
+            let solutions = path_bounds.solve_for_argument_context(db, env, constraints);
             if let Solutions::Constrained(solutions) = solutions {
                 for solution in solutions.into_vec() {
                     for binding in solution.solved_typevars {
