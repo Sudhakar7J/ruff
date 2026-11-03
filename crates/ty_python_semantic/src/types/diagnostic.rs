@@ -137,11 +137,7 @@ pub(crate) fn register_lints(registry: &mut LintRegistryBuilder) {
     registry.register_lint(&UNBOUND_TYPE_VARIABLE);
     registry.register_lint(&MISSING_ARGUMENT);
     registry.register_lint(&MISSING_DIRECT_DEPENDENCY);
-    registry.register_lint(&MISSING_RETURN_TYPE_PUBLIC_FUNCTION);
-    registry.register_lint(&MISSING_RETURN_TYPE_PRIVATE_FUNCTION);
-    registry.register_lint(&MISSING_RETURN_TYPE_SPECIAL_METHOD);
-    registry.register_lint(&MISSING_RETURN_TYPE_STATIC_METHOD);
-    registry.register_lint(&MISSING_RETURN_TYPE_CLASS_METHOD);
+    registry.register_lint(&MISSING_RETURN_TYPE);
     registry.register_lint(&MISSING_TYPE_FUNCTION_ARGUMENT);
     registry.register_lint(&MISSING_TYPE_ARGS);
     registry.register_lint(&MISSING_TYPE_KWARGS);
@@ -845,46 +841,10 @@ declare_lint! {
 }
 
 declare_lint! {
-    #[doc = include_str!("../../resources/lint_docs/missing-return-type-public-function.md")]
-    pub(crate) static MISSING_RETURN_TYPE_PUBLIC_FUNCTION = {
-        summary: "detects public functions and methods without return type annotations",
-        status: LintStatus::stable("0.0.96"),
-        default_level: Level::Ignore,
-    }
-}
-
-declare_lint! {
-    #[doc = include_str!("../../resources/lint_docs/missing-return-type-private-function.md")]
-    pub(crate) static MISSING_RETURN_TYPE_PRIVATE_FUNCTION = {
-        summary: "detects private functions and methods without return type annotations",
-        status: LintStatus::stable("0.0.96"),
-        default_level: Level::Ignore,
-    }
-}
-
-declare_lint! {
-    #[doc = include_str!("../../resources/lint_docs/missing-return-type-special-method.md")]
-    pub(crate) static MISSING_RETURN_TYPE_SPECIAL_METHOD = {
-        summary: "detects special methods without return type annotations",
-        status: LintStatus::stable("0.0.96"),
-        default_level: Level::Ignore,
-    }
-}
-
-declare_lint! {
-    #[doc = include_str!("../../resources/lint_docs/missing-return-type-static-method.md")]
-    pub(crate) static MISSING_RETURN_TYPE_STATIC_METHOD = {
-        summary: "detects static methods without return type annotations",
-        status: LintStatus::stable("0.0.96"),
-        default_level: Level::Ignore,
-    }
-}
-
-declare_lint! {
-    #[doc = include_str!("../../resources/lint_docs/missing-return-type-class-method.md")]
-    pub(crate) static MISSING_RETURN_TYPE_CLASS_METHOD = {
-        summary: "detects class methods without return type annotations",
-        status: LintStatus::stable("0.0.96"),
+    #[doc = include_str!("../../resources/lint_docs/missing-return-type.md")]
+    pub(crate) static MISSING_RETURN_TYPE = {
+        summary: "detects functions and methods without return type annotations",
+        status: LintStatus::preview("0.0.96"),
         default_level: Level::Ignore,
     }
 }
