@@ -2824,7 +2824,7 @@ class TwoTag(TypedDict):
 def equal_dictionary_tags[T: (Literal[0], Literal[2])](value: FalseTag | TwoTag, other: T):
     if value["tag"] == other:
         reveal_type(value)  # revealed: FalseTag | TwoTag
-        value["two_only"]  # error: [invalid-typeddict-key] "Unknown key "two_only" for TypedDict `FalseTag`"
+        value["two_only"]  # error: [invalid-typed-dict-key] "Unknown key "two_only" for TypedDict `FalseTag`"
 ```
 
 ## Independent specializations during overload argument expansion
