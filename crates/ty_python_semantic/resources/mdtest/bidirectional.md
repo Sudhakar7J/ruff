@@ -178,7 +178,7 @@ for _ in range(2):
     record = {"value": 1}
     inspect(record)
     reveal_type(record)  # revealed: Record
-    record["missing"]  # error: [invalid-key]
+    record["missing"]  # error: [invalid-typeddict-key]
 
 class Record(TypedDict):
     value: int
@@ -1159,12 +1159,12 @@ x2: TD | None = first([{"x": 0}, {"x": 1}])
 reveal_type(x2)  # revealed: TD
 
 # error: [missing-typed-dict-key] "Missing required key 'x' in TypedDict `TD` constructor"
-# error: [invalid-key] "Unknown key "y" for TypedDict `TD`"
+# error: [unknown-typeddict-constructor-key] "Unknown key "y" for TypedDict `TD`"
 # error: [invalid-assignment] "Object of type `TD | dict[str, int]` is not assignable to `TD`"
 x3: TD = first([{"y": 0}, {"x": 1}])
 
 # error: [missing-typed-dict-key] "Missing required key 'x' in TypedDict `TD` constructor"
-# error: [invalid-key] "Unknown key "y" for TypedDict `TD`"
+# error: [unknown-typeddict-constructor-key] "Unknown key "y" for TypedDict `TD`"
 # error: [invalid-assignment] "Object of type `TD | None | dict[str, int]` is not assignable to `TD | None`"
 x4: TD | None = first([{"y": 0}, {"x": 1}])
 
