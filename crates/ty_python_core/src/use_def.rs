@@ -692,8 +692,7 @@ struct UseDefMapExtra {
 
     /// [`Bindings`] for each member reaching a [`ScopedUseId`].
     ///
-    /// This is only used for kwargs expressions, whose corresponding `bindings_by_use` entry
-    /// is empty.
+    /// Used by splatted keyword arguments and subscripts whose key is inferred later.
     multi_bindings_by_use: MultiBindingsByUse,
 
     /// Retained [`PlaceState`] values for each member.
@@ -915,21 +914,30 @@ impl Default for RangeInfo {
     }
 }
 
+type MemberBindings = (ScopedMemberId, InternedBindingsId);
+
 #[derive(Debug, PartialEq, Eq, get_size2::GetSize)]
-struct MultiBindingsByUse(ThinVec<(ScopedUseId, Box<[Bindings]>)>);
+struct MultiBindingsByUse(ThinVec<(ScopedUseId, Box<[MemberBindings]>)>);
 
 impl MultiBindingsByUse {
-    fn from_map(map: FxHashMap<ScopedUseId, Vec<Bindings>>) -> Self {
-        let mut entries = ThinVec::with_capacity(map.len());
-        entries.extend(
-            map.into_iter()
-                .map(|(use_id, bindings)| (use_id, bindings.into_boxed_slice())),
-        );
-        entries.sort_unstable_by_key(|(use_id, _)| *use_id);
+    fn from_map(
+        map: FxHashMap<ScopedUseId, Vec<(ScopedMemberId, Bindings)>>,
+        interner: &mut PlaceStateInterner,
+    ) -> Self {
+        let mut uses: Vec<_> = map.into_iter().collect();
+        uses.sort_unstable_by_key(|(use_id, _)| *use_id);
+        let mut entries = ThinVec::with_capacity(uses.len());
+        for (use_id, members) in uses {
+            let snapshots = members
+                .into_iter()
+                .map(|(member, bindings)| (member, interner.intern_bindings(&bindings)))
+                .collect();
+            entries.push((use_id, snapshots));
+        }
         Self(entries)
     }
 
-    fn get(&self, use_id: ScopedUseId) -> Option<&[Bindings]> {
+    fn get(&self, use_id: ScopedUseId) -> Option<&[MemberBindings]> {
         self.0
             .binary_search_by_key(&use_id, |(candidate, _)| *candidate)
             .ok()
@@ -1027,23 +1035,17 @@ impl<'db> UseDefMap<'db> {
         )
     }
 
-    pub fn multi_bindings_at_use(
+    /// Returns the members whose bindings were recorded at a subscript or a `**kwargs` use.
+    pub fn member_snapshots_at_use(
         &self,
         use_id: ScopedUseId,
-    ) -> impl Iterator<Item = BindingWithConstraintsIterator<'_, 'db>> {
+    ) -> impl Iterator<Item = (ScopedMemberId, BindingsSnapshotId)> + '_ {
         self.extra
             .as_deref()
             .and_then(|extra| extra.multi_bindings_by_use.get(use_id))
-            .map(|member_bindings| {
-                member_bindings.iter().map(|bindings| {
-                    self.bindings_iterator(
-                        bindings.as_slice(),
-                        BoundnessAnalysis::BasedOnUnboundVisibility,
-                    )
-                })
-            })
             .into_iter()
             .flatten()
+            .map(|&(member, bindings)| (member, BindingsSnapshotId(bindings)))
     }
 
     pub fn applicable_constraints(
@@ -2078,9 +2080,8 @@ pub(super) struct UseDefMapBuilder<'db> {
     /// Live bindings associated with each so-far-recorded use.
     ///
     /// Unlike `bindings_by_use`, this field supports associating multiple bindings with a
-    /// single use. This is only used for kwargs expressions, whose corresponding `bindings_by_use`
-    /// entry is empty.
-    multi_bindings_by_use: FxHashMap<ScopedUseId, Vec<Bindings>>,
+    /// single use, as in `**mapping` and `mapping[key]`.
+    multi_bindings_by_use: FxHashMap<ScopedUseId, Vec<(ScopedMemberId, Bindings)>>,
 
     /// Tracks whether or not the current point in control flow is reachable from the
     /// start of the scope.
@@ -2824,15 +2825,14 @@ impl<'db> UseDefMapBuilder<'db> {
         self.if_chain_start = snapshot;
     }
 
-    pub(super) fn record_multi_use(
+    pub(super) fn record_member_snapshots(
         &mut self,
-        places: impl Iterator<Item = ScopedPlaceId>,
+        members: impl Iterator<Item = ScopedMemberId>,
         use_id: ScopedUseId,
     ) {
         let pending = self.pending_reachability.current;
-        for place in places {
-            let place_state =
-                pending_place_state_mut(place, &mut self.symbol_states, &mut self.member_states);
+        for member in members {
+            let place_state = &mut self.member_states[member];
             let place_state = self.pending_reachability.materialize_ref_at_use(
                 place_state,
                 pending,
@@ -2846,10 +2846,17 @@ impl<'db> UseDefMapBuilder<'db> {
             self.multi_bindings_by_use
                 .entry(use_id)
                 .or_default()
-                .push(bindings);
+                .push((member, bindings));
         }
+    }
 
-        // Record a placeholder use of the parent expression to preserve the indices of `bindings_by_use`.
+    pub(super) fn record_kwargs_use(
+        &mut self,
+        members: impl Iterator<Item = ScopedMemberId>,
+        use_id: ScopedUseId,
+    ) {
+        self.record_member_snapshots(members, use_id);
+        // The keyword itself has no bindings, but still occupies a use ID.
         self.record_use_bindings(Bindings::default(), use_id);
     }
 
@@ -3199,6 +3206,8 @@ impl<'db> UseDefMapBuilder<'db> {
         );
         let bindings_by_use =
             Self::intern_bindings_by_use(self.bindings_by_use, &mut place_state_interner);
+        let multi_bindings_by_use =
+            MultiBindingsByUse::from_map(self.multi_bindings_by_use, &mut place_state_interner);
         let if_chain_start_by_use = FrozenMap::from_entries(
             self.if_chain_start_by_use
                 .into_iter()
@@ -3250,12 +3259,6 @@ impl<'db> UseDefMapBuilder<'db> {
         );
         let interned_declarations =
             interned_declarations.finish(&mut self.reachability_constraints);
-        for bindings in self.multi_bindings_by_use.values_mut().flatten() {
-            bindings.finish(
-                &mut self.narrowing_constraints,
-                &mut self.reachability_constraints,
-            );
-        }
         // Keep default entries while building so they remain barriers between non-contiguous
         // ranges with the same metadata. Once construction is complete, absence represents the
         // default of reachable code outside a `TYPE_CHECKING` block.
@@ -3271,7 +3274,6 @@ impl<'db> UseDefMapBuilder<'db> {
             }
         }
         self.reachability_constraints.mark_used(self.reachability);
-        let multi_bindings_by_use = MultiBindingsByUse::from_map(self.multi_bindings_by_use);
         let loop_headers = self.loop_headers;
         let mut boolean_test_roots = self.boolean_test_roots;
         // In `body if test else other`, we visit `test` before `body`, but node indices follow

@@ -77,8 +77,6 @@ use crate::{
 };
 use crate::{Db, Statement, StatementNodeKey};
 
-use super::place::PlaceExprRef;
-
 mod except_handlers;
 mod loop_bindings_visitor;
 
@@ -263,6 +261,7 @@ pub(super) struct SemanticIndexBuilder<'db, 'ast> {
     has_future_annotations: bool,
     /// Whether we are currently visiting an `if TYPE_CHECKING` block.
     in_type_checking_block: bool,
+    track_typed_dict_keys: OnceCell<bool>,
 
     // Used for checking semantic syntax errors
     resolver_environment: ResolverEnvironment<'db>,
@@ -337,6 +336,7 @@ impl<'db, 'ast> SemanticIndexBuilder<'db, 'ast> {
 
             has_future_annotations: false,
             in_type_checking_block: false,
+            track_typed_dict_keys: OnceCell::new(),
 
             scopes: IndexVec::new(),
             place_tables: IndexVec::new(),
@@ -1412,6 +1412,29 @@ impl<'db, 'ast> SemanticIndexBuilder<'db, 'ast> {
         }
         let use_id = self.current_ast_ids_mut().record_use(expr);
         self.current_use_def_map_mut().record_use(place_id, use_id);
+    }
+
+    /// Consult the file's rule selection only if a subscript or membership test needs it.
+    fn track_typed_dict_keys(&self) -> bool {
+        *self
+            .track_typed_dict_keys
+            .get_or_init(|| self.db.track_typed_dict_keys(self.file.file(self.db)))
+    }
+
+    /// Save the bindings of known string keys when a subscript loads its receiver. For
+    /// `movie[key]`, type inference can later select `movie["year"]` if `key` has type `Literal["year"]`.
+    fn record_subscript_key_uses(&mut self, receiver: &ast::Expr) {
+        let scope = self.current_scope();
+        let places = &self.place_tables[scope];
+        if let Some(use_id) = self.ast_ids[scope].try_use_id(receiver)
+            && let Some(receiver) = PlaceExpr::try_from_expr(receiver)
+            && let Some(receiver) = places.place_id((&receiver).into())
+        {
+            let keys = places
+                .direct_member_ids(receiver)
+                .filter(|&id| places.member(id).string_subscript_key().is_some());
+            self.use_def_maps[scope].record_member_snapshots(keys, use_id);
+        }
     }
 
     fn record_place_definition(&mut self, place_id: ScopedPlaceId, expr: &'ast ast::Expr) {
@@ -3532,7 +3555,23 @@ impl<'db, 'ast> SemanticIndexBuilder<'db, 'ast> {
                     deferred_effects = Some((place_expr, is_use, is_definition));
                 }
 
-                walk_expr(self, expr);
+                if deferred_effects.is_none()
+                    && let ast::Expr::Subscript(subscript) = expr
+                    && (*ctx == ast::ExprContext::Load
+                        || matches!(
+                            self.current_assignment(),
+                            Some(CurrentAssignment::AugAssign(_))
+                        ))
+                    && self.track_typed_dict_keys()
+                {
+                    self.visit_expr(&subscript.value);
+                    // The index expression can rebind the receiver after Python loads it.
+                    self.record_subscript_key_uses(&subscript.value);
+                    self.visit_expr(&subscript.slice);
+                    self.visit_expr_context(ctx);
+                } else {
+                    walk_expr(self, expr);
+                }
 
                 let is_use = deferred_effects
                     .as_ref()
@@ -3694,7 +3733,9 @@ impl<'db, 'ast> SemanticIndexBuilder<'db, 'ast> {
                         ast::CmpOp::Is | ast::CmpOp::IsNot
                     ));
                 }
-                if let Some(item) = PlaceExpr::from_key_membership(compare) {
+                if let Some(item) = PlaceExpr::from_key_membership(compare)
+                    && self.track_typed_dict_keys()
+                {
                     self.add_place(item);
                 }
             }
@@ -5701,31 +5742,11 @@ impl<'ast> Visitor<'ast> for SemanticIndexBuilder<'_, 'ast> {
                 self.current_place_table()
                     .place_id((&value_place_expr).into())
             })
-            .map(|value_place_id| {
-                let place_table = &self.place_tables[current_scope];
-                place_table
-                    .associated_place_ids(value_place_id)
-                    .iter()
-                    .filter(move |key_member_id| {
-                        let key_member_expr = place_table.member(**key_member_id).expression();
-
-                        // Only include top-level keys.
-                        let Some(key_parent) = key_member_expr.as_ref().parent() else {
-                            return true;
-                        };
-                        match place_table.place(value_place_id) {
-                            PlaceExprRef::Symbol(_) => false,
-                            PlaceExprRef::Member(value_member) => {
-                                key_parent == value_member.expression()
-                            }
-                        }
-                    })
-                    .map(|key_member_id| ScopedPlaceId::from(*key_member_id))
-            });
+            .map(|receiver| self.place_tables[current_scope].direct_member_ids(receiver));
 
         let use_id = self.ast_ids[current_scope].record_use(keyword);
         self.use_def_maps[current_scope]
-            .record_multi_use(member_places.into_iter().flatten(), use_id);
+            .record_kwargs_use(member_places.into_iter().flatten(), use_id);
     }
 
     fn visit_expr(&mut self, expr: &'ast ast::Expr) {

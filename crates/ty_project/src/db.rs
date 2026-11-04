@@ -654,6 +654,10 @@ impl SemanticDb for ProjectDatabase {
 
 #[salsa::db]
 impl ty_python_core::Db for ProjectDatabase {
+    fn track_typed_dict_keys(&self, file: File) -> bool {
+        self.project.is_some() && ty_python_semantic::types::track_typed_dict_keys(self, file)
+    }
+
     fn should_check_file(&self, file: File) -> bool {
         // Avoid creating a dependency on the `should_check_file` query for vendored files.
         if file.path(self).is_vendored_path() {

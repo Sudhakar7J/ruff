@@ -2604,11 +2604,18 @@ def guarded(movie: Movie):
         return
     reveal_type(movie["year"])  # revealed: int
 
-def guarded_literal_key(movie: Movie, key: Literal["year"]):
+def guarded_literal_key(movie: Movie, key: Literal["year"], flag: bool):
     if key in movie:
         reveal_type(movie["year"])  # revealed: int
     if "year" in movie:
         reveal_type(movie[key])  # revealed: int
+        del movie["year"]
+        movie[key]  # error: [possibly-missing-typed-dict-key]
+    movie["year"] = 1984
+    movie[key]
+    if flag:
+        del movie["year"]
+    movie[key]  # error: [possibly-missing-typed-dict-key]
 
 def bounded[T: Movie](movie: T):
     movie["year"]  # error: [possibly-missing-typed-dict-key]

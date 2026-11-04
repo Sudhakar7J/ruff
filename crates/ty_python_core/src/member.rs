@@ -35,6 +35,12 @@ impl Member {
         &self.expression
     }
 
+    /// Returns the string in the last subscript of a place such as `box.movie["year"]`.
+    pub fn string_subscript_key(&self) -> Option<&str> {
+        let last = self.expression.segments().last()?;
+        (last.kind == SegmentKind::StringSubscript).then_some(last.text)
+    }
+
     /// Is the place given a value in its containing scope?
     pub(crate) const fn is_bound(&self) -> bool {
         self.flags.contains(MemberFlags::IS_BOUND)

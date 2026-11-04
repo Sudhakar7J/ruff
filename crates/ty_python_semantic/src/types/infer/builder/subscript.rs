@@ -40,6 +40,7 @@ use crate::types::{
 };
 use crate::{Db, FxOrderSet, ProgramEnvironment};
 use ty_python_core::definition::Definition;
+use ty_python_core::narrowing_constraints::ConstraintKey;
 use ty_python_core::place::PlaceExpr;
 use ty_python_core::scope::FileScopeId;
 use ty_python_core::{SemanticIndex, place_table};
@@ -506,17 +507,9 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
                 if value_ty.typed_dict_key_required(db, env, key) != Some(false) {
                     continue;
                 }
-                let initial_presence = self.typed_dict_receiver_key_presence(&subscript.value, key);
-                let presence =
-                    PlaceExpr::try_from_expr(subscript).map_or(initial_presence, |place| {
-                        self.narrow_place_with_applicable_constraints(
-                            (&place).into(),
-                            NarrowingTarget::KeyPresence,
-                            initial_presence,
-                            &constraint_keys,
-                        )
-                    });
-                if presence == Type::bool_literal(true) {
+                if self.typed_dict_key_presence_at_read(subscript, key, &constraint_keys)
+                    == Type::bool_literal(true)
+                {
                     continue;
                 }
                 if let Some(builder) = self
@@ -539,6 +532,47 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
                     &constraint_keys,
                 )
             })
+    }
+
+    /// Checks the literal subscript's reaching writes and deletions, even if the read uses a
+    /// variable with that literal type, as in `movie[key]` for `key: Literal["year"]`.
+    fn typed_dict_key_presence_at_read(
+        &self,
+        subscript: &ast::ExprSubscript,
+        key: &str,
+        constraints: &[(FileScopeId, ConstraintKey)],
+    ) -> Type<'db> {
+        let initial = self.typed_dict_receiver_key_presence(&subscript.value, key);
+        if let Some(place) = PlaceExpr::try_from_expr(subscript) {
+            return self.narrow_place_with_applicable_constraints(
+                (&place).into(),
+                NarrowingTarget::KeyPresence,
+                initial,
+                constraints,
+            );
+        }
+        if self.in_string_annotation() {
+            return initial;
+        }
+        let scope = self.scope().file_scope_id(self.db());
+        let places = self.index.place_table(scope);
+        if let Some(use_id) = self
+            .index
+            .try_expression_use_id(subscript.value.as_ref().into())
+            && let Some((member, snapshot)) = self
+                .index
+                .use_def_map(scope)
+                .member_snapshots_at_use(use_id)
+                .find(|&(id, _)| places.member(id).string_subscript_key() == Some(key))
+        {
+            return self.narrow_place_with_applicable_constraints(
+                places.member(member).into(),
+                NarrowingTarget::KeyPresence,
+                initial,
+                &[(scope, ConstraintKey::Snapshot(snapshot))],
+            );
+        }
+        initial
     }
 
     fn typed_dict_receiver_key_presence(&self, receiver: &ast::Expr, key: &str) -> Type<'db> {

@@ -9,6 +9,12 @@ use crate::program::{Program, ProgramSettings};
 pub trait Db: ModuleResolverDb {
     /// Returns `true` if the file should be checked.
     fn should_check_file(&self, file: File) -> bool;
+
+    /// Whether to retain the key bindings needed by flow-sensitive `TypedDict` diagnostics.
+    /// A database can skip them for files where the missing-key rule is disabled.
+    fn track_typed_dict_keys(&self, _file: File) -> bool {
+        true
+    }
 }
 
 #[cfg(any(test, feature = "testing"))]

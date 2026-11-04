@@ -9123,13 +9123,13 @@ impl<'db, 'ast> TypeInferenceBuilder<'db, 'ast> {
 
         // Collect the types of each distinct key.
         let mut elements: Vec<(&str, Type<'db>)> = Vec::new();
-        for bindings in
-            use_def.multi_bindings_at_use(keyword.scoped_use_id(db, self.program_file()))
+        for (_, snapshot) in
+            use_def.member_snapshots_at_use(keyword.scoped_use_id(db, self.program_file()))
         {
             let place = place_from_bindings_with_reachability_cache(
                 db,
                 env,
-                bindings.clone(),
+                use_def.bindings_at_snapshot(snapshot),
                 self.reachability_cache(),
             );
             let Some(key) = place.first_definition.and_then(definition_key) else {

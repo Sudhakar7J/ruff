@@ -392,6 +392,18 @@ impl PlaceTableBuilder {
         }
     }
 
+    /// Returns the immediate members of a place, excluding more deeply nested accesses.
+    pub(crate) fn direct_member_ids(
+        &self,
+        place: ScopedPlaceId,
+    ) -> impl Iterator<Item = ScopedMemberId> + '_ {
+        let depth = self.place(place).num_member_segments() + 1;
+        self.associated_place_ids(place)
+            .iter()
+            .copied()
+            .filter(move |&id| self.member(id).expression().num_segments() == depth)
+    }
+
     pub(crate) fn iter(&self) -> impl Iterator<Item = PlaceExprRef<'_>> {
         self.symbols
             .iter()

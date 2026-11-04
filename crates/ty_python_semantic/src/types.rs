@@ -197,6 +197,14 @@ pub(crate) mod definition_resolution;
 mod property_tests;
 mod subscript;
 
+/// Enables subscript snapshots only where the optional missing-key diagnostic uses them.
+#[salsa::tracked(returns(copy), heap_size=ruff_memory_usage::heap_size)]
+pub fn track_typed_dict_keys(db: &dyn Db, file: ruff_db::files::File) -> bool {
+    db.rule_selection(file).is_enabled(crate::lint::LintId::of(
+        &diagnostic::POSSIBLY_MISSING_TYPED_DICT_KEY,
+    ))
+}
+
 pub fn check_types(db: &dyn Db, file: ProgramFile<'_>) -> Vec<Diagnostic> {
     let source_file = file.file(db);
     let _span = tracing::trace_span!("check_types", ?source_file).entered();
