@@ -655,7 +655,11 @@ impl SemanticDb for ProjectDatabase {
 #[salsa::db]
 impl ty_python_core::Db for ProjectDatabase {
     fn track_typed_dict_keys(&self, file: File) -> bool {
-        self.project.is_some() && ty_python_semantic::types::track_typed_dict_keys(self, file)
+        // Vendored stubs never emit diagnostics. Keeping their indexes independent of project
+        // settings lets Salsa discard dependencies for queries that can never change.
+        !file.path(self).is_vendored_path()
+            && self.project.is_some()
+            && ty_python_semantic::types::track_typed_dict_keys(self, file)
     }
 
     fn should_check_file(&self, file: File) -> bool {
